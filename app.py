@@ -1,4 +1,4 @@
-# app.py - 다계정 지원 버전 
+# app.py - 다계정 지원 버전
 from flask import Flask, request, jsonify
 import requests
 import json
@@ -95,3 +95,6 @@ def webhook():
 
     threading.Thread(target=run_bitget).start()
     return jsonify({"status": "주문 전송됨", "account": parsed['account']}), 200
+
+if __name__ == '__main__':
+    app.run()
