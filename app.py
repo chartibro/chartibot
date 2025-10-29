@@ -1,4 +1,4 @@
-# app.py - 다계정 지원 버전
+# app.py - TVExtBot 스타일 한 줄 입력 버전
 from flask import Flask, request, jsonify
 import requests
 import json
@@ -10,22 +10,16 @@ import hashlib
 
 app = Flask(__name__)
 
-# === 계정 로드 (환경 변수에서 자동 읽기) ===
+# === 한 줄 계정 로드 ===
 accounts = {}
-for i in range(1, 11):  # 최대 10개 계정
-    uid = os.getenv(f'BITGET_UID_{i}')
-    if not uid: break
-    accounts[uid] = {
-        'key': os.getenv(f'BITGET_KEY_{i}'),
-        'secret': os.getenv(f'BITGET_SECRET_{i}'),
-        'passphrase': os.getenv(f'BITGET_PASS_{i}')
-    }
+raw_accounts = os.getenv('BITGET_ACCOUNTS', '')
+for line in raw_accounts.strip().split('\n'):
+    parts = line.strip().split(',')
+    if len(parts) != 4: continue
+    uid, key, secret, passphrase = parts
+    accounts[uid] = {'key': key, 'secret': secret, 'passphrase': passphrase}
 
-# Bybit도 나중에 추가 가능
-bybit_key = os.getenv('BYBIT_API_KEY')
-bybit_secret = os.getenv('BYBIT_SECRET')
-
-# === 메시지 파싱 + 계정 선택 ===
+# === 메시지 파싱 ===
 def parse_tvext(message):
     if not message.startswith('TVM:') or not message.endswith(':MVT'):
         return None
@@ -35,7 +29,7 @@ def parse_tvext(message):
         orderid = data.get('orderid')
         memo = data.get('memo', '')
         token = data.get('token', '').replace('/', '')
-        account = data.get('account', '')  # TVM에 account 필드 추가!
+        account = data.get('account', '')
 
         side = 'buy' if '매수' in memo else 'sell'
         percent = 0.1
@@ -46,13 +40,12 @@ def parse_tvext(message):
     except:
         return None
 
-# === Bitget 주문 (계정별) ===
+# === Bitget 주문 ===
 def place_bitget_order(symbol, side, percent, account_uid):
     if account_uid not in accounts:
         return {"error": f"Account {account_uid} not found"}
     acc = accounts[account_uid]
     
-    # 서명
     def sign(method, url, body, ts):
         payload = f"{ts}{method.upper()}{url}{json.dumps(body) if body else ''}"
         return hmac.new(acc['secret'].encode(), payload.encode(), hashlib.sha256).hexdigest()
@@ -87,13 +80,13 @@ def webhook():
     message = data.get('message', '')
     parsed = parse_tvext(message)
     if not parsed or not parsed['account']:
-        return jsonify({"error": "Missing account in TVM"}), 400
+        return jsonify({"error": "Missing account"}), 400
 
-    def run_bitget():
+    def run():
         result = place_bitget_order(parsed['symbol'], parsed['side'], parsed['percent'], parsed['account'])
         print(f"Bitget [{parsed['account']}]:", result)
 
-    threading.Thread(target=run_bitget).start()
+    threading.Thread(target=run).start()
     return jsonify({"status": "주문 전송됨", "account": parsed['account']}), 200
 
 if __name__ == '__main__':
