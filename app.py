@@ -66,7 +66,7 @@ def parse_v37(msg: str):
     }
 
 # ----------------------------------------------------------------------
-# 3. Bybit 주문 – 모든 요청에 try-except + 로그
+# 3. Bybit 주문 – 모든 요청에 try-except + 로그 강제
 # ----------------------------------------------------------------------
 def bybit_order(data):
     try:
@@ -84,7 +84,8 @@ def bybit_order(data):
 
         api_key, secret = acc['key'], acc['secret']
         def sign(p, ts): 
-            return hmac.new(secret.encode(), f"{api_key}{ts}5000{json.dumps(p) if isinstance(p,dict) else p}".encode(), hashlib.sha256).hexdigest()
+            param_str = f"{api_key}{ts}5000{json.dumps(p) if isinstance(p,dict) else p}"
+            return hmac.new(secret.encode(), param_str.encode(), hashlib.sha256).hexdigest()
 
         ts = str(int(datetime.now().timestamp()*1000))
 
@@ -98,8 +99,10 @@ def bybit_order(data):
                 'X-BAPI-RECV-WINDOW': '5000',
                 'Content-Type': 'application/json'
             }
-            r = requests.post(f'{base}/v5/position/set-leverage', headers=hdr, json=lev, timeout=10)
+            r = requests.post(f'{base}/v5/position/set-leverage', headers=hdr, json=lev, timeout=15)
             logger.info(f"[BYBIT] 레버리지 응답: {r.status_code} {r.text}")
+            if r.status_code != 200:
+                return {'error': f'leverage failed: {r.text}'}
         except Exception as e:
             logger.error(f"[BYBIT] 레버리지 실패: {e}")
             return {'error': 'leverage failed'}
@@ -108,14 +111,14 @@ def bybit_order(data):
         try:
             mm = {'category':'linear','symbol':data['symbol'],'marginMode':data['margin_type']}
             hdr_m = {**hdr, 'X-BAPI-SIGN': sign(mm,ts)}
-            r = requests.post(f'{base}/v5/account/set-margin-mode', headers=hdr_m, json=mm, timeout=10)
+            r = requests.post(f'{base}/v5/account/set-margin-mode', headers=hdr_m, json=mm, timeout=15)
             logger.info(f"[BYBIT] 마진 모드 응답: {r.status_code} {r.text}")
         except Exception as e:
             logger.error(f"[BYBIT] 마진 모드 실패: {e}")
 
         # === 3. 잔고 조회 ===
         try:
-            r = requests.get(f'{base}/v5/account/wallet-balance', headers={**hdr, 'X-BAPI-SIGN': sign({'category':'linear'},ts)}, params={'category':'linear'}, timeout=10)
+            r = requests.get(f'{base}/v5/account/wallet-balance', headers={**hdr, 'X-BAPI-SIGN': sign({'category':'linear'},ts)}, params={'category':'linear'}, timeout=15)
             j = r.json()
             logger.info(f"[BYBIT] 잔고 응답: {j}")
             usdt = next((x for x in j.get('result',{}).get('list',[]) if x['coin']=='USDT'),{}).get('walletBalance','0')
@@ -129,9 +132,12 @@ def bybit_order(data):
 
         # === 4. 티커 조회 ===
         try:
-            r = requests.get(f'{base}/v5/market/tickers', params={'category':'linear','symbol':data['symbol']}, timeout=10)
+            r = requests.get(f'{base}/v5/market/tickers', params={'category':'linear','symbol':data['symbol']}, timeout=15)
             j = r.json()
             logger.info(f"[BYBIT] 티커 응답: {j}")
+            if 'result' not in j or not j['result']['list']:
+                logger.error(f"[BYBIT] 티커 데이터 없음: {j}")
+                return {'error': 'ticker empty'}
             price = float(j['result']['list'][0]['lastPrice'])
             logger.info(f"[BYBIT] 현재가: {price}")
         except Exception as e:
@@ -159,7 +165,7 @@ def bybit_order(data):
                 'qty': str(qty)
             }
             hdr_o = {**hdr, 'X-BAPI-SIGN': sign(order,ts)}
-            r = requests.post(f'{base}/v5/order/create', headers=hdr_o, json=order, timeout=10)
+            r = requests.post(f'{base}/v5/order/create', headers=hdr_o, json=order, timeout=15)
             result = r.json()
             logger.info(f"[BYBIT ORDER RESULT] {result}")
             return result
@@ -172,7 +178,7 @@ def bybit_order(data):
         return {'error': str(e)}
 
 # ----------------------------------------------------------------------
-# 4. 웹훅 – 스레드 예외 처리
+# 4. 웹훅 – 스레드 예외 처리 + 강제 로그
 # ----------------------------------------------------------------------
 @app.route('/order', methods=['POST'])
 def webhook():
