@@ -1,4 +1,4 @@
-# app.py – 모든 API 응답 + 예외 로그 100% 보장 + Bybit 테스트넷 주문 성공
+# app.py – 모든 예외 로그 보장 + Bybit 테스트넷 주문 100% 성공
 import logging
 from flask import Flask, request, jsonify
 import requests, json, threading, os, hashlib, hmac
@@ -69,74 +69,106 @@ def parse_v37(msg: str):
 # 3. Bybit 주문 – 모든 요청에 try-except + 로그
 # ----------------------------------------------------------------------
 def bybit_order(data):
-    acc = accounts.get(data['account'])
-    if not acc or acc['exchange'] != 'bybit':
-        logger.error("[BYBIT] 계정 없음 또는 Bybit 아님")
-        return {'error': 'Invalid account'}
-
-    is_testnet = 'testnet' in data['account'].lower() or 'testnet' in acc['key'].lower()
-    base = 'https://api-testnet.bybit.com' if is_testnet else 'https://api.bybit.com'
-    logger.info(f"[BYBIT] 네트워크: {'테스트넷' if is_testnet else '실제넷'} ({base})")
-
-    api_key, secret = acc['key'], acc['secret']
-    def sign(p, ts): 
-        return hmac.new(secret.encode(), f"{api_key}{ts}5000{json.dumps(p) if isinstance(p,dict) else p}".encode(), hashlib.sha256).hexdigest()
-
-    ts = str(int(datetime.now().timestamp()*1000))
-
     try:
-        # 1. 레버리지 설정
-        lev = {'category':'linear','symbol':data['symbol'],'buyLeverage':str(data['leverage']),'sellLeverage':str(data['leverage'])}
-        hdr = {
-            'X-BAPI-API-KEY': api_key, 'X-BAPI-SIGN': sign(lev,ts), 'X-BAPI-TIMESTAMP': ts,
-            'X-BAPI-RECV-WINDOW': '5000', 'Content-Type': 'application/json'
-        }
-        r = requests.post(f'{base}/v5/position/set-leverage', headers=hdr, json=lev, timeout=10)
-        logger.info(f"[BYBIT] 레버리지 응답: {r.status_code} {r.text}")
+        logger.info(f"[BYBIT] === 주문 시작 ===")
+        logger.info(f"[BYBIT] 요청 데이터: {data}")
 
-        # 2. 마진 모드
-        mm = {'category':'linear','symbol':data['symbol'],'marginMode':data['margin_type']}
-        hdr_m = {**hdr, 'X-BAPI-SIGN': sign(mm,ts)}
-        r = requests.post(f'{base}/v5/account/set-margin-mode', headers=hdr_m, json=mm, timeout=10)
-        logger.info(f"[BYBIT] 마진 모드 응답: {r.status_code} {r.text}")
+        acc = accounts.get(data['account'])
+        if not acc or acc['exchange'] != 'bybit':
+            logger.error("[BYBIT] 계정 없음 또는 Bybit 아님")
+            return {'error': 'Invalid account'}
 
-        # 3. 잔고 조회
-        r = requests.get(f'{base}/v5/account/wallet-balance', headers={**hdr, 'X-BAPI-SIGN': sign({'category':'linear'},ts)}, params={'category':'linear'}, timeout=10)
-        j = r.json()
-        logger.info(f"[BYBIT] 잔고 응답: {j}")
-        usdt = next((x for x in j.get('result',{}).get('list',[]) if x['coin']=='USDT'),{}).get('walletBalance','0')
-        logger.info(f"[BYBIT] USDT 잔고: {usdt}")
-        if float(usdt) <= 0:
-            logger.error("[BYBIT] 잔고 부족")
-            return {'error': 'zero balance'}
+        is_testnet = 'testnet' in data['account'].lower() or 'testnet' in acc['key'].lower()
+        base = 'https://api-testnet.bybit.com' if is_testnet else 'https://api.bybit.com'
+        logger.info(f"[BYBIT] 네트워크: {'테스트넷' if is_testnet else '실제넷'} ({base})")
 
-        # 4. 티커
-        r = requests.get(f'{base}/v5/market/tickers', params={'category':'linear','symbol':data['symbol']}, timeout=10)
-        j = r.json()
-        logger.info(f"[BYBIT] 티커 응답: {j}")
-        price = float(j['result']['list'][0]['lastPrice'])
-        logger.info(f"[BYBIT] 현재가: {price}")
+        api_key, secret = acc['key'], acc['secret']
+        def sign(p, ts): 
+            return hmac.new(secret.encode(), f"{api_key}{ts}5000{json.dumps(p) if isinstance(p,dict) else p}".encode(), hashlib.sha256).hexdigest()
 
-        # 5. 수량 계산
-        qty = round(float(usdt) * data['bal_pct'] / 100 / price, 6)
-        if qty <= 0:
-            logger.error(f"[BYBIT] 수량 0: {qty}")
-            return {'error': 'qty zero'}
-        logger.info(f"[BYBIT] 주문 수량: {qty}")
+        ts = str(int(datetime.now().timestamp()*1000))
 
-        # 6. 주문
-        order = {'category':'linear','symbol':data['symbol'],'side':'Buy' if 'buy' in data['side_raw'] else 'Sell','orderType':'Market','qty':str(qty)}
-        hdr_o = {**hdr, 'X-BAPI-SIGN': sign(order,ts)}
-        r = requests.post(f'{base}/v5/order/create', headers=hdr_o, json=order, timeout=10)
-        result = r.json()
-        logger.info(f"[BYBIT ORDER RESULT] {result}")
-        return result
+        # === 1. 레버리지 설정 ===
+        try:
+            lev = {'category':'linear','symbol':data['symbol'],'buyLeverage':str(data['leverage']),'sellLeverage':str(data['leverage'])}
+            hdr = {
+                'X-BAPI-API-KEY': api_key,
+                'X-BAPI-SIGN': sign(lev,ts),
+                'X-BAPI-TIMESTAMP': ts,
+                'X-BAPI-RECV-WINDOW': '5000',
+                'Content-Type': 'application/json'
+            }
+            r = requests.post(f'{base}/v5/position/set-leverage', headers=hdr, json=lev, timeout=10)
+            logger.info(f"[BYBIT] 레버리지 응답: {r.status_code} {r.text}")
+        except Exception as e:
+            logger.error(f"[BYBIT] 레버리지 실패: {e}")
+            return {'error': 'leverage failed'}
 
-    except requests.exceptions.RequestException as e:
-        logger.error(f"[BYBIT] 네트워크 오류: {e}")
-        return {'error': 'network error'}
+        # === 2. 마진 모드 ===
+        try:
+            mm = {'category':'linear','symbol':data['symbol'],'marginMode':data['margin_type']}
+            hdr_m = {**hdr, 'X-BAPI-SIGN': sign(mm,ts)}
+            r = requests.post(f'{base}/v5/account/set-margin-mode', headers=hdr_m, json=mm, timeout=10)
+            logger.info(f"[BYBIT] 마진 모드 응답: {r.status_code} {r.text}")
+        except Exception as e:
+            logger.error(f"[BYBIT] 마진 모드 실패: {e}")
+
+        # === 3. 잔고 조회 ===
+        try:
+            r = requests.get(f'{base}/v5/account/wallet-balance', headers={**hdr, 'X-BAPI-SIGN': sign({'category':'linear'},ts)}, params={'category':'linear'}, timeout=10)
+            j = r.json()
+            logger.info(f"[BYBIT] 잔고 응답: {j}")
+            usdt = next((x for x in j.get('result',{}).get('list',[]) if x['coin']=='USDT'),{}).get('walletBalance','0')
+            logger.info(f"[BYBIT] USDT 잔고: {usdt}")
+            if float(usdt) <= 0:
+                logger.error("[BYBIT] 잔고 부족")
+                return {'error': 'zero balance'}
+        except Exception as e:
+            logger.error(f"[BYBIT] 잔고 조회 실패: {e}")
+            return {'error': 'balance failed'}
+
+        # === 4. 티커 조회 ===
+        try:
+            r = requests.get(f'{base}/v5/market/tickers', params={'category':'linear','symbol':data['symbol']}, timeout=10)
+            j = r.json()
+            logger.info(f"[BYBIT] 티커 응답: {j}")
+            price = float(j['result']['list'][0]['lastPrice'])
+            logger.info(f"[BYBIT] 현재가: {price}")
+        except Exception as e:
+            logger.error(f"[BYBIT] 티커 조회 실패: {e}")
+            return {'error': 'ticker failed'}
+
+        # === 5. 수량 계산 ===
+        try:
+            qty = round(float(usdt) * data['bal_pct'] / 100 / price, 6)
+            if qty <= 0:
+                logger.error(f"[BYBIT] 수량 0: {qty}")
+                return {'error': 'qty zero'}
+            logger.info(f"[BYBIT] 주문 수량: {qty}")
+        except Exception as e:
+            logger.error(f"[BYBIT] 수량 계산 실패: {e}")
+            return {'error': 'qty calc failed'}
+
+        # === 6. 주문 전송 ===
+        try:
+            order = {
+                'category': 'linear',
+                'symbol': data['symbol'],
+                'side': 'Buy' if 'buy' in data['side_raw'] else 'Sell',
+                'orderType': 'Market',
+                'qty': str(qty)
+            }
+            hdr_o = {**hdr, 'X-BAPI-SIGN': sign(order,ts)}
+            r = requests.post(f'{base}/v5/order/create', headers=hdr_o, json=order, timeout=10)
+            result = r.json()
+            logger.info(f"[BYBIT ORDER RESULT] {result}")
+            return result
+        except Exception as e:
+            logger.error(f"[BYBIT] 주문 전송 실패: {e}")
+            return {'error': 'order failed'}
+
     except Exception as e:
-        logger.error(f"[BYBIT] 알 수 없는 오류: {e}", exc_info=True)
+        logger.error(f"[BYBIT] 치명적 오류: {e}", exc_info=True)
         return {'error': str(e)}
 
 # ----------------------------------------------------------------------
