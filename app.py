@@ -1,4 +1,4 @@
-# app.py – V37 완전 호환 + 디버그 로그 + Bybit testnet 자동 감지
+# app.py – 최종 수정본 (오타 제거 + 디버그 유지)
 from flask import Flask, request, jsonify
 import requests, json, threading, os, hashlib, hmac
 from datetime import datetime
@@ -6,7 +6,7 @@ from datetime import datetime
 app = Flask(__name__)
 
 # ----------------------------------------------------------------------
-# 1. 한 줄 계정 로드 (Bitget 5개 / Bybit 4개)
+# 1. 한 줄 계정 로드
 # ----------------------------------------------------------------------
 accounts = {}
 raw = os.getenv('EXCHANGE_ACCOUNTS', '')
@@ -27,7 +27,7 @@ for line in raw.strip().split('\n'):
 print(f"[DEBUG] 등록된 계정: {list(accounts.keys())}")
 
 # ----------------------------------------------------------------------
-# 2. V37 메시지 파싱 (디버그 포함)
+# 2. V37 메시지 파싱
 # ----------------------------------------------------------------------
 def parse_v37(msg: str):
     print(f"[DEBUG] 수신된 전체 message: {repr(msg)}")
@@ -82,7 +82,7 @@ def parse_v37(msg: str):
     }
 
 # ----------------------------------------------------------------------
-# 3. Bitget 선물
+# 3. Bitget 선물 (오타 수정!)
 # ----------------------------------------------------------------------
 def bitget_order(data):
     acc = accounts[data['account']]
@@ -116,7 +116,8 @@ def bitget_order(data):
         'https://api.bitget.com/api/mix/v1/account/accounts',
         headers={**hdr, 'ACCESS-SIGN':sign('GET','/api/mix/v1/account/accounts','',ts)}
     ).json()
-    usdt = next((x for x in bal_res.get('data',[]) if x['marginCoin']=='USDT'),{}rating).get('available','0')
+    # 오타 수정: {}rating → {}
+    usdt = next((x for x in bal_res.get('data',[]) if x['marginCoin']=='USDT'), {}).get('available','0')
 
     price = float(requests.get(
         f'https://api.bitget.com/api/mix/v1/market/ticker?symbol={data["symbol"]}'
@@ -203,7 +204,7 @@ def bybit_order(data):
     return requests.post(f'{base}/v5/order/create', headers=hdr_o, json=order).json()
 
 # ----------------------------------------------------------------------
-# 5. 웹훅 (디버그 로그 강화)
+# 5. 웹훅
 # ----------------------------------------------------------------------
 @app.route('/order', methods=['POST'])
 def webhook():
