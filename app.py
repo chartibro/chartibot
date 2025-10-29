@@ -1,4 +1,4 @@
-# app.py – V37 완전 호환 + Bybit testnet 자동 감지
+# app.py – V37 완전 호환 + Bybit testnet 자동 감지 + side_raw 버그 수정
 from flask import Flask, request, jsonify
 import requests, json, threading, os, hashlib, hmac
 from datetime import datetime
@@ -6,7 +6,7 @@ from datetime import datetime
 app = Flask(__name__)
 
 # ----------------------------------------------------------------------
-# 1. 한 줄 계정 로드 (Bitget 5개 / Bybit 4개)
+# 1. 한 줄 계정 로드
 # ----------------------------------------------------------------------
 accounts = {}
 raw = os.getenv('EXCHANGE_ACCOUNTS', '')
@@ -23,7 +23,7 @@ for line in raw.strip().split('\n'):
     }
 
 # ----------------------------------------------------------------------
-# 2. V37 메시지 파싱
+# 2. V37 메시지 파싱 (side_raw 저장)
 # ----------------------------------------------------------------------
 def parse_v37(msg: str):
     if not (msg.startswith('TVM:') and msg.endswith(':MVT')):
@@ -42,7 +42,6 @@ def parse_v37(msg: str):
         trail    = float(payload.get('trailing_stop', 0))
         ts_price = float(payload.get('ts_ac_price', 0))
 
-        # Bitget 내부 direction
         if 'buy' in side_raw:
             direction = 'open_long' if 'close' not in side_raw else 'close_short'
         elif 'sell' in side_raw:
@@ -55,7 +54,7 @@ def parse_v37(msg: str):
             'account'    : account,
             'symbol'     : symbol,
             'direction'  : direction,
-            'side'       : side_raw,       # Bybit용 (buy/sell)
+            'side_raw'   : side_raw,       # Bybit용
             'bal_pct'    : bal_pct,
             'leverage'   : leverage,
             'margin_type': margin,
@@ -80,7 +79,6 @@ def bitget_order(data):
 
     ts = str(int(datetime.now().timestamp()*1000))
 
-    # 레버리지
     lev_url = '/api/mix/v1/account/setLeverage'
     lev_body = {'symbol':data['symbol'],'marginCoin':'USDT','leverage':str(data['leverage'])}
     hdr = {
@@ -92,7 +90,6 @@ def bitget_order(data):
     }
     requests.post('https://api.bitget.com'+lev_url, headers=hdr, json=lev_body)
 
-    # 마진 타입
     if data['margin_type']=='isolated':
         m_url = '/api/mix/v1/account/setMarginMode'
         m_body = {'symbol':data['symbol'],'marginMode':'isolated'}
@@ -100,21 +97,18 @@ def bitget_order(data):
         hdr2 = {**hdr, 'ACCESS-SIGN':sign('POST',m_url,m_body,t2), 'ACCESS-TIMESTAMP':t2}
         requests.post('https://api.bitget.com'+m_url, headers=hdr2, json=m_body)
 
-    # 잔고
     bal_res = requests.get(
         'https://api.bitget.com/api/mix/v1/account/accounts',
         headers={**hdr, 'ACCESS-SIGN':sign('GET','/api/mix/v1/account/accounts','',ts)}
     ).json()
     usdt = next((x for x in bal_res.get('data',[]) if x['marginCoin']=='USDT'),{}).get('available','0')
 
-    # 현재가
     price = float(requests.get(
         f'https://api.bitget.com/api/mix/v1/market/ticker?symbol={data["symbol"]}'
     ).json()['data']['lastPrice'])
 
     qty = float(usdt) * data['bal_pct'] / 100 / price
 
-    # 주문
     order_url = '/api/mix/v1/plan/placeOrder'
     body = {
         'symbol'    : data['symbol'],
@@ -133,13 +127,12 @@ def bitget_order(data):
     return requests.post('https://api.bitget.com'+order_url, headers=hdr3, json=body).json()
 
 # ----------------------------------------------------------------------
-# 4. Bybit 선물 (testnet 자동 감지)
+# 4. Bybit 선물 (testnet 자동 + side_raw 사용)
 # ----------------------------------------------------------------------
 def bybit_order(data):
     acc = accounts[data['account']]
     if acc['exchange'] != 'bybit': return {'error':'Not Bybit'}
 
-    # 계정명 또는 키에 'testnet' 포함 → 테스트넷
     is_testnet = 'testnet' in data['account'].lower() or 'testnet' in acc['key'].lower()
     base = 'https://api-testnet.bybit.com' if is_testnet else 'https://api.bybit.com'
     api_key, secret = acc['key'], acc['secret']
@@ -181,11 +174,11 @@ def bybit_order(data):
 
     qty = float(usdt) * data['bal_pct'] / 100 / price
 
-    # 주문
+    # 주문 (side_raw 사용!)
     order = {
         'category' : 'linear',
         'symbol'   : data['symbol'],
-        'side'     : 'Buy' if 'buy' in data['side'] else 'Sell',
+        'side'     : 'Buy' if 'buy' in data['side_raw'] else 'Sell',
         'orderType': 'Market',
         'qty'      : str(round(qty,6))
     }
@@ -208,6 +201,7 @@ def webhook():
     parsed = parse_v37(msg)
 
     if not parsed or parsed['account'] not in accounts:
+        print("Invalid message or account:", msg, accounts.keys())
         return jsonify({'error':'Invalid V37 message'}), 400
 
     def run():
