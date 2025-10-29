@@ -1,4 +1,4 @@
-# app.py - TVExtBot 스타일 한 줄 입력 버전
+# app.py - TVExtBot 스타일 한 줄 입력 버전 
 from flask import Flask, request, jsonify
 import requests
 import json
