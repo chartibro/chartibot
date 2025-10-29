@@ -1,4 +1,4 @@
-# app.py – 최종 수정본 (오타 제거 + 디버그 유지)
+# app.py – V37 완전 호환 + Bybit USDT Perpetual 완벽 주문 + 디버그 로그
 from flask import Flask, request, jsonify
 import requests, json, threading, os, hashlib, hmac
 from datetime import datetime
@@ -6,7 +6,7 @@ from datetime import datetime
 app = Flask(__name__)
 
 # ----------------------------------------------------------------------
-# 1. 한 줄 계정 로드
+# 1. 한 줄 계정 로드 (Bitget 5개 / Bybit 4개)
 # ----------------------------------------------------------------------
 accounts = {}
 raw = os.getenv('EXCHANGE_ACCOUNTS', '')
@@ -82,7 +82,7 @@ def parse_v37(msg: str):
     }
 
 # ----------------------------------------------------------------------
-# 3. Bitget 선물 (오타 수정!)
+# 3. Bitget 선물 (오타 수정됨)
 # ----------------------------------------------------------------------
 def bitget_order(data):
     acc = accounts[data['account']]
@@ -116,7 +116,6 @@ def bitget_order(data):
         'https://api.bitget.com/api/mix/v1/account/accounts',
         headers={**hdr, 'ACCESS-SIGN':sign('GET','/api/mix/v1/account/accounts','',ts)}
     ).json()
-    # 오타 수정: {}rating → {}
     usdt = next((x for x in bal_res.get('data',[]) if x['marginCoin']=='USDT'), {}).get('available','0')
 
     price = float(requests.get(
@@ -143,11 +142,13 @@ def bitget_order(data):
     return requests.post('https://api.bitget.com'+order_url, headers=hdr3, json=body).json()
 
 # ----------------------------------------------------------------------
-# 4. Bybit 선물 (testnet 자동)
+# 4. Bybit 선물 – USDT Perpetual 완벽 주문 + 디버그
 # ----------------------------------------------------------------------
 def bybit_order(data):
     acc = accounts[data['account']]
-    if acc['exchange'] != 'bybit': return {'error':'Not Bybit'}
+    if acc['exchange'] != 'bybit': 
+        print("[ERROR] Not Bybit account")
+        return {'error':'Not Bybit'}
 
     is_testnet = 'testnet' in data['account'].lower() or 'testnet' in acc['key'].lower()
     base = 'https://api-testnet.bybit.com' if is_testnet else 'https://api.bybit.com'
@@ -160,48 +161,89 @@ def bybit_order(data):
 
     ts = str(int(datetime.now().timestamp()*1000))
 
-    lev = {'category':'linear','symbol':data['symbol'],
-           'buyLeverage':str(data['leverage']),'sellLeverage':str(data['leverage'])}
-    hdr = {
-        'X-BAPI-API-KEY'    : api_key,
-        'X-BAPI-SIGN'       : sign(lev,ts),
-        'X-BAPI-TIMESTAMP'  : ts,
-        'X-BAPI-RECV-WINDOW': '5000',
-        'Content-Type'      : 'application/json'
-    }
-    requests.post(f'{base}/v5/position/set-leverage', headers=hdr, json=lev)
+    # === 레버리지 설정 ===
+    try:
+        lev = {'category':'linear','symbol':data['symbol'],'buyLeverage':str(data['leverage']),'sellLeverage':str(data['leverage'])}
+        hdr = {
+            'X-BAPI-API-KEY': api_key,
+            'X-BAPI-SIGN': sign(lev,ts),
+            'X-BAPI-TIMESTAMP': ts,
+            'X-BAPI-RECV-WINDOW': '5000',
+            'Content-Type': 'application/json'
+        }
+        lev_res = requests.post(f'{base}/v5/position/set-leverage', headers=hdr, json=lev)
+        print(f"[DEBUG] 레버리지 설정 응답: {lev_res.status_code} {lev_res.text}")
+    except Exception as e:
+        print(f"[ERROR] 레버리지 설정 실패: {e}")
+        return {'error': 'leverage failed'}
 
-    mm = {'category':'linear','symbol':data['symbol'],'marginMode':data['margin_type']}
-    hdr_m = {**hdr, 'X-BAPI-SIGN':sign(mm,ts)}
-    requests.post(f'{base}/v5/account/set-margin-mode', headers=hdr_m, json=mm)
+    # === 마진 모드 ===
+    try:
+        mm = {'category':'linear','symbol':data['symbol'],'marginMode':data['margin_type']}
+        hdr_m = {**hdr, 'X-BAPI-SIGN':sign(mm,ts)}
+        mm_res = requests.post(f'{base}/v5/account/set-margin-mode', headers=hdr_m, json=mm)
+        print(f"[DEBUG] 마진 모드 응답: {mm_res.status_code} {mm_res.text}")
+    except Exception as e:
+        print(f"[ERROR] 마진 모드 실패: {e}")
 
-    bal_res = requests.get(
-        f'{base}/v5/account/wallet-balance',
-        headers={**hdr, 'X-BAPI-SIGN':sign({'category':'linear'},ts)},
-        params={'category':'linear'}
-    ).json()
-    usdt = next((x for x in bal_res.get('result',{}).get('list',[]) if x['coin']=='USDT'),{}).get('walletBalance','0')
+    # === 잔고 조회 ===
+    try:
+        bal_res = requests.get(
+            f'{base}/v5/account/wallet-balance',
+            headers={**hdr, 'X-BAPI-SIGN':sign({'category':'linear'},ts)},
+            params={'category':'linear'}
+        )
+        bal_json = bal_res.json()
+        print(f"[DEBUG] 잔고 응답: {bal_json}")
+        usdt = next((x for x in bal_json.get('result',{}).get('list',[]) if x['coin']=='USDT'),{}).get('walletBalance','0')
+        print(f"[DEBUG] USDT 잔고: {usdt}")
+        if float(usdt) <= 0:
+            print(f"[ERROR] 잔고 0")
+            return {'error': 'zero balance'}
+    except Exception as e:
+        print(f"[ERROR] 잔고 조회 실패: {e}")
+        return {'error': 'balance failed'}
 
-    price_res = requests.get(f'{base}/v5/market/tickers', params={'category':'linear','symbol':data['symbol']}).json()
-    price = float(price_res['result']['list'][0]['lastPrice'])
+    # === 현재가 조회 ===
+    try:
+        price_res = requests.get(f'{base}/v5/market/tickers', params={'category':'linear','symbol':data['symbol']})
+        price_json = price_res.json()
+        print(f"[DEBUG] 티커 응답: {price_json}")
+        price = float(price_json['result']['list'][0]['lastPrice'])
+        print(f"[DEBUG] 현재가: {price}")
+    except Exception as e:
+        print(f"[ERROR] 티커 조회 실패: {e}")
+        return {'error': 'ticker failed'}
 
-    qty = float(usdt) * data['bal_pct'] / 100 / price
+    # === 수량 계산 ===
+    try:
+        qty = float(usdt) * data['bal_pct'] / 100 / price
+        qty = round(qty, 6)
+        if qty <= 0:
+            print(f"[ERROR] 계산된 수량 0: {qty}")
+            return {'error': 'qty zero'}
+        print(f"[DEBUG] 주문 수량: {qty}")
+    except Exception as e:
+        print(f"[ERROR] 수량 계산 실패: {e}")
+        return {'error': 'qty calc failed'}
 
-    order = {
-        'category' : 'linear',
-        'symbol'   : data['symbol'],
-        'side'     : 'Buy' if 'buy' in data['side_raw'] else 'Sell',
-        'orderType': 'Market',
-        'qty'      : str(round(qty,6))
-    }
-    if data['trailing']>0:
-        order['tpslMode'] = 'FullMode'
-        order['tpTriggerBy'] = 'LastPrice'
-        order['slTriggerBy'] = 'LastPrice'
-        order['slRate'] = str(data['trailing'])
-
-    hdr_o = {**hdr, 'X-BAPI-SIGN':sign(order,ts)}
-    return requests.post(f'{base}/v5/order/create', headers=hdr_o, json=order).json()
+    # === 주문 전송 ===
+    try:
+        order = {
+            'category': 'linear',
+            'symbol': data['symbol'],
+            'side': 'Buy' if 'buy' in data['side_raw'] else 'Sell',
+            'orderType': 'Market',
+            'qty': str(qty)
+        }
+        hdr_o = {**hdr, 'X-BAPI-SIGN':sign(order,ts)}
+        order_res = requests.post(f'{base}/v5/order/create', headers=hdr_o, json=order)
+        result = order_res.json()
+        print(f"[BYBIT ORDER RESULT] {result}")
+        return result
+    except Exception as e:
+        print(f"[ERROR] 주문 전송 실패: {e}")
+        return {'error': 'order failed'}
 
 # ----------------------------------------------------------------------
 # 5. 웹훅
