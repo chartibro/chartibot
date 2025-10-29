@@ -1,4 +1,4 @@
-# app.py - 다계정 지원 버전
+# app.py - 다계정 지원 버전 
 from flask import Flask, request, jsonify
 import requests
 import json
