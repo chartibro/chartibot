@@ -1,4 +1,4 @@
-# app.py – Bitget v2 API 문서 기반 완벽 버전
+# app.py – productType: umcbl (Bitget v2 공식)
 import logging
 from flask import Flask, request, jsonify
 import requests, json, os, hashlib, hmac
@@ -40,7 +40,6 @@ def parse_v37(msg: str):
 
     symbol = payload.get('symbol', '').replace('/', 'USDT')
 
-    logger.info(f"[PARSE] 파싱 성공: {payload}")
     return {
         'exchange': payload.get('exchange', '').lower(),
         'account': payload.get('account', ''),
@@ -53,7 +52,7 @@ def parse_v37(msg: str):
     }
 
 # ----------------------------------------------------------------------
-# 3. Bitget 서명 함수 (문서 기반)
+# 3. Bitget 서명 함수
 # ----------------------------------------------------------------------
 def bitget_sign(method, url, body, secret, ts):
     body_str = json.dumps(body, separators=(',', ':'), ensure_ascii=False) if body else ''
@@ -61,7 +60,7 @@ def bitget_sign(method, url, body, secret, ts):
     return hmac.new(secret.encode(), pre_hash.encode(), hashlib.sha256).hexdigest()
 
 # ----------------------------------------------------------------------
-# 4. Bitget 주문 (v2 API, 문서 기반 수정)
+# 4. Bitget 주문 (productType: umcbl)
 # ----------------------------------------------------------------------
 def bitget_order(data):
     try:
@@ -77,50 +76,43 @@ def bitget_order(data):
             'Content-Type': 'application/json'
         }
 
-        # 1. 레버리지 (productType: USDT-FUTURES)
+        # 1. 레버리지
         try:
             lev_url = '/api/v2/mix/account/set-leverage'
             lev_body = {
                 'symbol': data['symbol'],
                 'marginCoin': 'USDT',
                 'leverage': str(data['leverage']),
-                'productType': 'USDT-FUTURES'
+                'productType': 'umcbl'  # umcbl
             }
             hdr = {**hdr_base, 'ACCESS-SIGN': bitget_sign('POST', lev_url, lev_body, acc['secret'], ts)}
             r = requests.post('https://api.bitget.com' + lev_url, headers=hdr, json=lev_body, timeout=15)
-            logger.info(f"[BITGET] 레버리지 응답: {r.status_code} {r.text}")
+            logger.info(f"[BITGET] 레버리지 응답: {r.text}")
         except Exception as e:
             logger.warning(f"[BITGET] 레버리지 실패 (무시): {e}")
 
         # 2. 마진 모드
-        try:
-            if data['margin_type'] == 'isolated':
+        if data['margin_type'] == 'isolated':
+            try:
                 mm_url = '/api/v2/mix/account/set-margin-mode'
-                mm_body = {'symbol': data['symbol'], 'marginMode': 'isolated', 'productType': 'USDT-FUTURES'}
+                mm_body = {'symbol': data['symbol'], 'marginMode': 'isolated', 'productType': 'umcbl'}
                 t2 = str(int(datetime.now().timestamp() * 1000))
                 hdr2 = {**hdr_base, 'ACCESS-SIGN': bitget_sign('POST', mm_url, mm_body, acc['secret'], t2), 'ACCESS-TIMESTAMP': t2}
-                r = requests.post('https://api.bitget.com' + mm_url, headers=hdr2, json=mm_body, timeout=15)
-                logger.info(f"[BITGET] 마진 모드 응답: {r.status_code} {r.text}")
-        except Exception as e:
-            logger.warning(f"[BITGET] 마진 모드 실패 (무시): {e}")
+                requests.post('https://api.bitget.com' + mm_url, headers=hdr2, json=mm_body, timeout=15)
+            except: pass
 
-        # 3. 잔고 조회 (accounts)
+        # 3. 잔고 조회
         try:
             bal_url = '/api/v2/mix/account/accounts'
             t3 = str(int(datetime.now().timestamp() * 1000))
             hdr3 = {**hdr_base, 'ACCESS-SIGN': bitget_sign('GET', bal_url, {}, acc['secret'], t3), 'ACCESS-TIMESTAMP': t3}
-            r = requests.get('https://api.bitget.com' + bal_url, headers=hdr3, params={'productType': 'USDT-FUTURES'}, timeout=15)
+            r = requests.get('https://api.bitget.com' + bal_url, headers=hdr3, params={'productType': 'umcbl'}, timeout=15)
             j = r.json()
             logger.info(f"[BITGET] 잔고 응답: {j}")
-            if j.get('code') != '00000':
-                logger.error(f"[BITGET] 잔고 API 실패: {j}")
+            if j.get('code') != '00000' or not j.get('data'):
                 return {'error': 'balance api failed'}
-            if not j.get('data'):
-                logger.error("[BITGET] data 빈 배열")
-                return {'error': 'no data in balance'}
             usdt_data = next((x for x in j['data'] if x.get('marginCoin') == 'USDT'), None)
             if not usdt_data:
-                logger.error("[BITGET] USDT 없음")
                 return {'error': 'no usdt'}
             balance = usdt_data.get('available') or usdt_data.get('availableAmt') or '0'
             logger.info(f"[BITGET] USDT 잔고: {balance}")
@@ -136,17 +128,11 @@ def bitget_order(data):
             j = r.json()
             logger.info(f"[BITGET] 티커 응답: {j}")
             if j.get('code') != '00000' or not j.get('data'):
-                logger.error(f"[BITGET] 티커 API 실패: {j}")
-                return {'error': 'ticker api failed'}
-            price_data = j['data'][0]
-            price = float(price_data.get('last') or price_data.get('lastPr') or '0')
-            if price == 0:
-                logger.error(f"[BITGET] 가격 0: {price_data}")
-                return {'error': 'price zero'}
+                return {'error': 'ticker error'}
+            price = float(j['data'][0].get('last') or j['data'][0].get('lastPr') or '0')
+            if price == 0: return {'error': 'price zero'}
             logger.info(f"[BITGET] 현재가: {price}")
-        except Exception as e:
-            logger.error(f"[BITGET] 티커 예외: {e}")
-            return {'error': 'ticker exception'}
+        except: return {'error': 'ticker error'}
 
         # 5. 수량
         qty = round(float(balance) * data['bal_pct'] / 100 / price, 6)
@@ -163,7 +149,7 @@ def bitget_order(data):
                 'orderType': 'market',
                 'size': str(qty),
                 'clientOid': f'v37_{int(datetime.now().timestamp())}',
-                'productType': 'USDT-FUTURES'
+                'productType': 'umcbl'  # umcbl
             }
             t4 = str(int(datetime.now().timestamp() * 1000))
             hdr4 = {**hdr_base, 'ACCESS-SIGN': bitget_sign('POST', order_url, body, acc['secret'], t4), 'ACCESS-TIMESTAMP': t4}
