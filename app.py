@@ -1,4 +1,4 @@
-# app.py – 최종 완벽 버전 (오타 제거 + 잔고 조회 스킵)
+# app.py – 티커 + 주문 심볼 DOGEUSDT_UMCBL 사용
 import logging
 from flask import Flask, request, jsonify
 import requests, json, os, hashlib, hmac
@@ -23,7 +23,7 @@ for line in raw.strip().split('\n'):
 logger.info(f"[INIT] 등록된 계정: {list(accounts.keys())}")
 
 # ----------------------------------------------------------------------
-# 2. V37 파싱
+# 2. V37 파싱 (full_symbol 추가)
 # ----------------------------------------------------------------------
 def parse_v37(msg: str):
     if not msg.startswith('TVM:') or not msg.endswith(':MVT'): return None
@@ -36,11 +36,13 @@ def parse_v37(msg: str):
         direction = 'close_short' if 'buy' in side_raw else 'close_long'
 
     symbol = payload.get('symbol', '').replace('/', 'USDT')
+    full_symbol = f"{symbol}_UMCBL"  # Bitget v2 형식
 
     return {
         'exchange': payload.get('exchange', '').lower(),
         'account': payload.get('account', ''),
         'symbol': symbol,
+        'full_symbol': full_symbol,
         'direction': direction,
         'bal_pct': float(payload.get('bal_pct', 0)),
         'leverage': int(payload.get('leverage', 1)),
@@ -49,11 +51,11 @@ def parse_v37(msg: str):
     }
 
 # ----------------------------------------------------------------------
-# 3. Bitget 주문 (잔고 조회 스킵 + 오타 제거)
+# 3. Bitget 주문 (full_symbol 사용)
 # ----------------------------------------------------------------------
 def bitget_order(data):
     try:
-        logger.info(f"[BITGET] === 주문 시작 (잔고 조회 스킵) ===")
+        logger.info(f"[BITGET] === 주문 시작 (잔고 스킵) ===")
         acc = accounts.get(data['account'])
         if not acc or acc['exchange'] != 'bitget': return {'error': 'Invalid account'}
 
@@ -71,21 +73,23 @@ def bitget_order(data):
             'Content-Type': 'application/json'
         }
 
-        # 1. 레버리지 (오타 제거)
+        # 1. 레버리지
         try:
             lev_url = '/api/v2/mix/account/set-leverage'
-            lev_body = {'symbol': data['symbol'], 'marginCoin': 'USDT', 'leverage': str(data['leverage']), 'productType': 'umcbl'}
+            lev_body = {'symbol': data['full_symbol'], 'marginCoin': 'USDT', 'leverage': str(data['leverage']), 'productType': 'umcbl'}
             hdr['ACCESS-SIGN'] = sign('POST', lev_url, lev_body, ts)
             r = requests.post('https://api.bitget.com' + lev_url, headers=hdr, json=lev_body, timeout=15)
             logger.info(f"[BITGET] 레버리지: {r.text}")
         except Exception as e:
             logger.warning(f"[BITGET] 레버리지 실패 (무시): {e}")
 
-        # 2. 현재가
+        # 2. 현재가 (full_symbol 사용)
         try:
-            r = requests.get('https://api.bitget.com/api/v2/mix/market/ticker', params={'symbol': data['symbol']}, timeout=15)
+            r = requests.get('https://api.bitget.com/api/v2/mix/market/ticker', params={'symbol': data['full_symbol']}, timeout=15)
             j = r.json()
-            if j.get('code') != '00000': return {'error': 'ticker error'}
+            logger.info(f"[BITGET] 티커 응답: {j}")
+            if j.get('code') != '00000' or not j.get('data'):
+                return {'error': 'ticker error'}
             price = float(j['data'][0]['lastPr'])
             logger.info(f"[BITGET] 현재가: {price}")
         except Exception as e:
@@ -96,11 +100,11 @@ def bitget_order(data):
         qty = round(10 / price, 6)
         logger.info(f"[BITGET] 주문 수량: {qty}")
 
-        # 4. 주문
+        # 4. 주문 (full_symbol 사용)
         try:
             order_url = '/api/v2/mix/order/place-order'
             body = {
-                'symbol': data['symbol'],
+                'symbol': data['full_symbol'],
                 'marginCoin': 'USDT',
                 'side': data['direction'],
                 'orderType': 'market',
