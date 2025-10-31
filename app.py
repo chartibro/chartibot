@@ -1,4 +1,4 @@
-# app.py – productType: umcbl (Bitget v2 공식)
+# app.py – 잔고 조회 제거 + umcbl + 즉시 주문
 import logging
 from flask import Flask, request, jsonify
 import requests, json, os, hashlib, hmac
@@ -60,11 +60,11 @@ def bitget_sign(method, url, body, secret, ts):
     return hmac.new(secret.encode(), pre_hash.encode(), hashlib.sha256).hexdigest()
 
 # ----------------------------------------------------------------------
-# 4. Bitget 주문 (productType: umcbl)
+# 4. Bitget 주문 (잔고 스킵 + 고정 10 USDT)
 # ----------------------------------------------------------------------
 def bitget_order(data):
     try:
-        logger.info(f"[BITGET] 주문 시작: {data}")
+        logger.info(f"[BITGET] === 주문 시작 (잔고 스킵) ===")
         acc = accounts.get(data['account'])
         if not acc or acc['exchange'] != 'bitget': return {'error': 'Invalid account'}
 
@@ -83,7 +83,7 @@ def bitget_order(data):
                 'symbol': data['symbol'],
                 'marginCoin': 'USDT',
                 'leverage': str(data['leverage']),
-                'productType': 'umcbl'  # umcbl
+                'productType': 'umcbl'
             }
             hdr = {**hdr_base, 'ACCESS-SIGN': bitget_sign('POST', lev_url, lev_body, acc['secret'], ts)}
             r = requests.post('https://api.bitget.com' + lev_url, headers=hdr, json=lev_body, timeout=15)
@@ -91,38 +91,7 @@ def bitget_order(data):
         except Exception as e:
             logger.warning(f"[BITGET] 레버리지 실패 (무시): {e}")
 
-        # 2. 마진 모드
-        if data['margin_type'] == 'isolated':
-            try:
-                mm_url = '/api/v2/mix/account/set-margin-mode'
-                mm_body = {'symbol': data['symbol'], 'marginMode': 'isolated', 'productType': 'umcbl'}
-                t2 = str(int(datetime.now().timestamp() * 1000))
-                hdr2 = {**hdr_base, 'ACCESS-SIGN': bitget_sign('POST', mm_url, mm_body, acc['secret'], t2), 'ACCESS-TIMESTAMP': t2}
-                requests.post('https://api.bitget.com' + mm_url, headers=hdr2, json=mm_body, timeout=15)
-            except: pass
-
-        # 3. 잔고 조회
-        try:
-            bal_url = '/api/v2/mix/account/accounts'
-            t3 = str(int(datetime.now().timestamp() * 1000))
-            hdr3 = {**hdr_base, 'ACCESS-SIGN': bitget_sign('GET', bal_url, {}, acc['secret'], t3), 'ACCESS-TIMESTAMP': t3}
-            r = requests.get('https://api.bitget.com' + bal_url, headers=hdr3, params={'productType': 'umcbl'}, timeout=15)
-            j = r.json()
-            logger.info(f"[BITGET] 잔고 응답: {j}")
-            if j.get('code') != '00000' or not j.get('data'):
-                return {'error': 'balance api failed'}
-            usdt_data = next((x for x in j['data'] if x.get('marginCoin') == 'USDT'), None)
-            if not usdt_data:
-                return {'error': 'no usdt'}
-            balance = usdt_data.get('available') or usdt_data.get('availableAmt') or '0'
-            logger.info(f"[BITGET] USDT 잔고: {balance}")
-            if float(balance) <= 0:
-                return {'error': 'zero balance'}
-        except Exception as e:
-            logger.error(f"[BITGET] 잔고 예외: {e}")
-            return {'error': 'balance exception'}
-
-        # 4. 현재가
+        # 2. 현재가
         try:
             r = requests.get('https://api.bitget.com/api/v2/mix/market/ticker', params={'symbol': data['symbol']}, timeout=15)
             j = r.json()
@@ -134,12 +103,11 @@ def bitget_order(data):
             logger.info(f"[BITGET] 현재가: {price}")
         except: return {'error': 'ticker error'}
 
-        # 5. 수량
-        qty = round(float(balance) * data['bal_pct'] / 100 / price, 6)
-        if qty <= 0: return {'error': 'qty zero'}
+        # 3. 수량 (10 USDT 고정)
+        qty = round(10 / price, 6)
         logger.info(f"[BITGET] 주문 수량: {qty}")
 
-        # 6. 주문
+        # 4. 주문
         try:
             order_url = '/api/v2/mix/order/place-order'
             body = {
@@ -149,7 +117,7 @@ def bitget_order(data):
                 'orderType': 'market',
                 'size': str(qty),
                 'clientOid': f'v37_{int(datetime.now().timestamp())}',
-                'productType': 'umcbl'  # umcbl
+                'productType': 'umcbl'
             }
             t4 = str(int(datetime.now().timestamp() * 1000))
             hdr4 = {**hdr_base, 'ACCESS-SIGN': bitget_sign('POST', order_url, body, acc['secret'], t4), 'ACCESS-TIMESTAMP': t4}
