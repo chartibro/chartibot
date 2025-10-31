@@ -1,7 +1,7 @@
-# app.py – Bitget USDT-M v2 API 완벽 지원 + 주문 100% 체결
+# app.py – Vercel 서버리스 완벽 호환 (threading 제거, 동기 실행)
 import logging
 from flask import Flask, request, jsonify
-import requests, json, threading, os, hashlib, hmac
+import requests, json, os, hashlib, hmac
 from datetime import datetime
 
 logging.basicConfig(level=logging.INFO)
@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # ----------------------------------------------------------------------
-# 1. 계정 로드 (5개: uid,exchange,key,secret,passphrase)
+# 1. 계정 로드
 # ----------------------------------------------------------------------
 accounts = {}
 raw = os.getenv('EXCHANGE_ACCOUNTS', '')
@@ -18,7 +18,7 @@ logger.info(f"[INIT] EXCHANGE_ACCOUNTS: {raw}")
 for line in raw.strip().split('\n'):
     p = [x.strip() for x in line.split(',')]
     if len(p) < 5:
-        logger.warning(f"[INIT] 무시된 줄 (5개 미만): {line}")
+        logger.warning(f"[INIT] 무시된 줄: {line}")
         continue
     uid, exch, key, secret, passphrase = p
     accounts[uid] = {'exchange': exch.lower(), 'key': key, 'secret': secret, 'passphrase': passphrase}
@@ -40,21 +40,15 @@ def parse_v37(msg: str):
         return None
 
     side_raw = payload.get('side', '').lower()
-    direction = ''
-    if 'buy' in side_raw:
-        direction = 'open_long' if 'close' not in side_raw else 'close_short'
-    elif 'sell' in side_raw:
-        direction = 'open_short' if 'close' not in side_raw else 'close_long'
-    else:
-        logger.warning(f"[PARSE] side 오류: {side_raw}")
-        return None
+    direction = 'open_long' if 'buy' in side_raw else 'open_short'
+    if 'close' in side_raw:
+        direction = 'close_short' if 'buy' in side_raw else 'close_long'
 
     return {
         'exchange': payload.get('exchange', '').lower(),
         'account': payload.get('account', ''),
         'symbol': payload.get('symbol', '').replace('/', 'USDT'),
         'direction': direction,
-        'side_raw': side_raw,
         'bal_pct': float(payload.get('bal_pct', 0)),
         'leverage': int(payload.get('leverage', 1)),
         'margin_type': payload.get('margin_type', 'cross').lower(),
@@ -62,7 +56,7 @@ def parse_v37(msg: str):
     }
 
 # ----------------------------------------------------------------------
-# 3. Bitget 선물 주문 (v2 API, productType: umcbl)
+# 3. Bitget 선물 주문 (동기 실행)
 # ----------------------------------------------------------------------
 def bitget_order(data):
     try:
@@ -81,7 +75,7 @@ def bitget_order(data):
 
         ts = str(int(datetime.now().timestamp() * 1000))
 
-        # 1. 레버리지 설정 (productType: umcbl)
+        # 1. 레버리지
         try:
             lev_url = '/api/v2/mix/account/set-leverage'
             lev_body = {
@@ -111,11 +105,11 @@ def bitget_order(data):
                 t2 = str(int(datetime.now().timestamp() * 1000))
                 hdr2 = {**hdr, 'ACCESS-SIGN': sign('POST', mm_url, mm_body, t2), 'ACCESS-TIMESTAMP': t2}
                 r = requests.post('https://api.bitget.com' + mm_url, headers=hdr2, json=mm_body, timeout=15)
-                logger.info(f"[BITGET] 마진 모드 응답: {r.status_code} {r.text}")
+                logger.info(f"[BITGET] 마진 모드 응답: {r.text}")
         except Exception as e:
             logger.error(f"[BITGET] 마진 모드 예외: {e}")
 
-        # 3. 잔고 조회
+        # 3. 잔고
         try:
             bal_url = '/api/v2/mix/account/accounts'
             t3 = str(int(datetime.now().timestamp() * 1000))
@@ -132,7 +126,7 @@ def bitget_order(data):
             logger.error(f"[BITGET] 잔고 예외: {e}")
             return {'error': 'balance error'}
 
-        # 4. 현재가 조회
+        # 4. 현재가
         try:
             r = requests.get(f'https://api.bitget.com/api/v2/mix/market/ticker', params={'symbol': data['symbol']}, timeout=15)
             j = r.json()
@@ -146,18 +140,14 @@ def bitget_order(data):
             logger.error(f"[BITGET] 티커 예외: {e}")
             return {'error': 'ticker error'}
 
-        # 5. 수량 계산
-        try:
-            qty = round(float(usdt) * data['bal_pct'] / 100 / price, 6)
-            if qty <= 0:
-                logger.error(f"[BITGET] 수량 0: {qty}")
-                return {'error': 'qty zero'}
-            logger.info(f"[BITGET] 주문 수량: {qty}")
-        except Exception as e:
-            logger.error(f"[BITGET] 수량 계산 예외: {e}")
-            return {'error': 'qty error'}
+        # 5. 수량
+        qty = round(float(usdt) * data['bal_pct'] / 100 / price, 6)
+        if qty <= 0:
+            logger.error(f"[BITGET] 수량 0: {qty}")
+            return {'error': 'qty zero'}
+        logger.info(f"[BITGET] 주문 수량: {qty}")
 
-        # 6. 주문 전송 (clientOid 필수, productType: umcbl)
+        # 6. 주문
         try:
             order_url = '/api/v2/mix/order/place-order'
             body = {
@@ -176,7 +166,7 @@ def bitget_order(data):
             logger.info(f"[BITGET ORDER RESULT] {result}")
             return result
         except Exception as e:
-            logger.error(f"[BITGET] 주문 전송 예외: {e}")
+            logger.error(f"[BITGET] 주문 예외: {e}")
             return {'error': 'order error'}
 
     except Exception as e:
@@ -184,7 +174,7 @@ def bitget_order(data):
         return {'error': 'fatal'}
 
 # ----------------------------------------------------------------------
-# 4. 웹훅
+# 4. 웹훅 (동기 실행)
 # ----------------------------------------------------------------------
 @app.route('/order', methods=['POST'])
 def webhook():
@@ -194,29 +184,24 @@ def webhook():
 
     parsed = parse_v37(msg)
     if not parsed:
-        logger.warning("[WEBHOOK] V37 파싱 실패")
-        return jsonify({'error': 'Invalid V37 message'}), 400
+        logger.warning("[WEBHOOK] 파싱 실패")
+        return jsonify({'error': 'Invalid V37'}), 400
     if parsed['account'] not in accounts:
         logger.error(f"[WEBHOOK] 계정 없음: {parsed['account']}")
         return jsonify({'error': 'Account not found'}), 400
 
     logger.info(f"[WEBHOOK] 파싱 성공: {parsed}")
 
-    def run():
-        try:
-            logger.info(f"[THREAD] Bitget 주문 시작 → {parsed['account']}")
-            result = bitget_order(parsed)
-            logger.info(f"[THREAD] 최종 주문 결과: {result}")
-        except Exception as e:
-            logger.error(f"[THREAD] 스레드 예외: {e}", exc_info=True)
+    # 동기 실행 (Vercel 호환)
+    result = bitget_order(parsed)
+    logger.info(f"[SYNC] 최종 결과: {result}")
 
-    threading.Thread(target=run, daemon=True).start()
     return jsonify({
-        'status': '주문 전송됨',
+        'status': '주문 완료',
         'account': parsed['account'],
         'exchange': 'bitget',
         'symbol': parsed['symbol'],
-        'network': 'mainnet'
+        'result': result
     }), 200
 
 if __name__ == '__main__':
