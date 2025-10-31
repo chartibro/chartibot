@@ -62,7 +62,7 @@ def parse_v37(msg: str):
     }
 
 # ----------------------------------------------------------------------
-# 3. Bitget 선물 주문 (v2 API, USDT-M)
+# 3. Bitget 선물 주문 (v2 API, productType: umcbl)
 # ----------------------------------------------------------------------
 def bitget_order(data):
     try:
@@ -81,14 +81,14 @@ def bitget_order(data):
 
         ts = str(int(datetime.now().timestamp() * 1000))
 
-        # 1. 레버리지 설정 (v2: productType 필수)
+        # 1. 레버리지 설정 (productType: umcbl)
         try:
             lev_url = '/api/v2/mix/account/set-leverage'
             lev_body = {
                 'symbol': data['symbol'],
                 'marginCoin': 'USDT',
                 'leverage': str(data['leverage']),
-                'productType': 'USDT-FUTURES'
+                'productType': 'umcbl'
             }
             hdr = {
                 'ACCESS-KEY': acc['key'],
@@ -107,7 +107,7 @@ def bitget_order(data):
         try:
             if data['margin_type'] == 'isolated':
                 mm_url = '/api/v2/mix/account/set-margin-mode'
-                mm_body = {'symbol': data['symbol'], 'marginMode': 'isolated', 'productType': 'USDT-FUTURES'}
+                mm_body = {'symbol': data['symbol'], 'marginMode': 'isolated', 'productType': 'umcbl'}
                 t2 = str(int(datetime.now().timestamp() * 1000))
                 hdr2 = {**hdr, 'ACCESS-SIGN': sign('POST', mm_url, mm_body, t2), 'ACCESS-TIMESTAMP': t2}
                 r = requests.post('https://api.bitget.com' + mm_url, headers=hdr2, json=mm_body, timeout=15)
@@ -120,7 +120,7 @@ def bitget_order(data):
             bal_url = '/api/v2/mix/account/accounts'
             t3 = str(int(datetime.now().timestamp() * 1000))
             hdr3 = {**hdr, 'ACCESS-SIGN': sign('GET', bal_url, '', t3), 'ACCESS-TIMESTAMP': t3}
-            r = requests.get('https://api.bitget.com' + bal_url, headers=hdr3, params={'productType': 'USDT-FUTURES'}, timeout=15)
+            r = requests.get('https://api.bitget.com' + bal_url, headers=hdr3, params={'productType': 'umcbl'}, timeout=15)
             j = r.json()
             logger.info(f"[BITGET] 잔고 응답: {j}")
             usdt = next((x for x in j.get('data', []) if x['marginCoin'] == 'USDT'), {}).get('available', '0')
@@ -157,7 +157,7 @@ def bitget_order(data):
             logger.error(f"[BITGET] 수량 계산 예외: {e}")
             return {'error': 'qty error'}
 
-        # 6. 주문 전송 (v2: clientOid 필수)
+        # 6. 주문 전송 (clientOid 필수, productType: umcbl)
         try:
             order_url = '/api/v2/mix/order/place-order'
             body = {
@@ -167,7 +167,7 @@ def bitget_order(data):
                 'orderType': 'market',
                 'size': str(qty),
                 'clientOid': f'v37_{int(datetime.now().timestamp())}',
-                'productType': 'USDT-FUTURES'
+                'productType': 'umcbl'
             }
             t4 = str(int(datetime.now().timestamp() * 1000))
             hdr4 = {**hdr, 'ACCESS-SIGN': sign('POST', order_url, body, t4), 'ACCESS-TIMESTAMP': t4}
