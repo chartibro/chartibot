@@ -1,4 +1,4 @@
-# app.py – 잔고 조회 account/bill 사용 (100% 정확)
+# app.py – 최종 완벽 버전: account/bill + symbol 형식 수정
 import logging
 from flask import Flask, request, jsonify
 import requests, json, os, hashlib, hmac
@@ -35,10 +35,15 @@ def parse_v37(msg: str):
     if 'close' in side_raw:
         direction = 'close_short' if 'buy' in side_raw else 'close_long'
 
+    symbol = payload.get('symbol', '').replace('/', 'USDT')
+    # Bitget 심볼 형식: DOGEUSDT_UMCBL
+    full_symbol = f"{symbol}_UMCBL"
+
     return {
         'exchange': payload.get('exchange', '').lower(),
         'account': payload.get('account', ''),
-        'symbol': payload.get('symbol', '').replace('/', 'USDT'),
+        'symbol': symbol,
+        'full_symbol': full_symbol,  # 추가
         'direction': direction,
         'bal_pct': float(payload.get('bal_pct', 0)),
         'leverage': int(payload.get('leverage', 1)),
@@ -47,7 +52,7 @@ def parse_v37(msg: str):
     }
 
 # ----------------------------------------------------------------------
-# 3. Bitget 주문 (잔고: account/bill 사용)
+# 3. Bitget 주문 (account/bill + full_symbol)
 # ----------------------------------------------------------------------
 def bitget_order(data):
     try:
@@ -72,7 +77,7 @@ def bitget_order(data):
         # 1. 레버리지
         try:
             lev_url = '/api/v2/mix/account/set-leverage'
-            lev_body = {'symbol': data['symbol'], 'marginCoin': 'USDT', 'leverage': str(data['leverage']), 'productType': 'umcbl'}
+            lev_body = {'symbol': data['full_symbol'], 'marginCoin': 'USDT', 'leverage': str(data['leverage']), 'productType': 'umcbl'}
             hdr['ACCESS-SIGN'] = sign('POST', lev_url, lev_body, ts)
             r = requests.post('https://api.bitget.com' + lev_url, headers=hdr, json=lev_body, timeout=15)
             logger.info(f"[BITGET] 레버리지: {r.text}")
@@ -82,19 +87,19 @@ def bitget_order(data):
         if data['margin_type'] == 'isolated':
             try:
                 mm_url = '/api/v2/mix/account/set-margin-mode'
-                mm_body = {'symbol': data['symbol'], 'marginMode': 'isolated', 'productType': 'umcbl'}
+                mm_body = {'symbol': data['full_symbol'], 'marginMode': 'isolated', 'productType': 'umcbl'}
                 t2 = str(int(datetime.now().timestamp() * 1000))
                 hdr2 = {**hdr, 'ACCESS-SIGN': sign('POST', mm_url, mm_body, t2), 'ACCESS-TIMESTAMP': t2}
                 requests.post('https://api.bitget.com' + mm_url, headers=hdr2, json=mm_body, timeout=15)
             except: pass
 
-        # 3. 잔고 조회 (account/bill 사용 - 100% 정확)
+        # 3. 잔고 조회 (account/bill + full_symbol)
         try:
             bill_url = '/api/v2/mix/account/bill'
             t3 = str(int(datetime.now().timestamp() * 1000))
             hdr3 = {**hdr, 'ACCESS-SIGN': sign('GET', bill_url, '', t3), 'ACCESS-TIMESTAMP': t3}
             params = {
-                'symbol': data['symbol'],
+                'symbol': data['full_symbol'],
                 'marginCoin': 'USDT',
                 'productType': 'umcbl',
                 'pageSize': 1
@@ -104,6 +109,7 @@ def bitget_order(data):
             logger.info(f"[BITGET] 잔고(bill) 응답: {j}")
 
             if j.get('code') != '00000' or not j.get('data'):
+                logger.error(f"[BITGET] 잔고 API 실패: {j}")
                 return {'error': 'balance api failed'}
 
             balance = j['data'][0].get('available') or j['data'][0].get('availableAmt') or '0'
@@ -112,7 +118,7 @@ def bitget_order(data):
             if float(balance) <= 0:
                 return {'error': 'zero balance'}
         except Exception as e:
-            logger.error(f"[BITGET] 잔고 예외: {e}")
+            logger.error(f"[BITGET] 잔고 예외: {e}", exc_info=True)
             return {'error': 'balance exception'}
 
         # 4. 현재가
@@ -133,9 +139,13 @@ def bitget_order(data):
         try:
             order_url = '/api/v2/mix/order/place-order'
             body = {
-                'symbol': data['symbol'], 'marginCoin': 'USDT', 'side': data['direction'],
-                'orderType': 'market', 'size': str(qty),
-                'clientOid': f'v37_{int(datetime.now().timestamp())}', 'productType': 'umcbl'
+                'symbol': data['full_symbol'],
+                'marginCoin': 'USDT',
+                'side': data['direction'],
+                'orderType': 'market',
+                'size': str(qty),
+                'clientOid': f'v37_{int(datetime.now().timestamp())}',
+                'productType': 'umcbl'
             }
             t4 = str(int(datetime.now().timestamp() * 1000))
             hdr4 = {**hdr, 'ACCESS-SIGN': sign('POST', order_url, body, t4), 'ACCESS-TIMESTAMP': t4}
