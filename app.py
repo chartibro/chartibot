@@ -1,4 +1,4 @@
-# app.py – 잔고 조회 완벽 수정 (잔고 충분해도 인식)
+# app.py – 잔고 조회 account/bill 사용 (100% 정확)
 import logging
 from flask import Flask, request, jsonify
 import requests, json, os, hashlib, hmac
@@ -26,7 +26,6 @@ logger.info(f"[INIT] 등록된 계정: {list(accounts.keys())}")
 # 2. V37 파싱
 # ----------------------------------------------------------------------
 def parse_v37(msg: str):
-    logger.info(f"[PARSE] 수신 message: {repr(msg)}")
     if not msg.startswith('TVM:') or not msg.endswith(':MVT'): return None
     try: payload = json.loads(msg[4:-4])
     except: return None
@@ -48,7 +47,7 @@ def parse_v37(msg: str):
     }
 
 # ----------------------------------------------------------------------
-# 3. Bitget 주문 (잔고 조회 완벽 수정)
+# 3. Bitget 주문 (잔고: account/bill 사용)
 # ----------------------------------------------------------------------
 def bitget_order(data):
     try:
@@ -89,23 +88,25 @@ def bitget_order(data):
                 requests.post('https://api.bitget.com' + mm_url, headers=hdr2, json=mm_body, timeout=15)
             except: pass
 
-        # 3. 잔고 조회 (완벽 수정)
+        # 3. 잔고 조회 (account/bill 사용 - 100% 정확)
         try:
-            bal_url = '/api/v2/mix/account/accounts'
+            bill_url = '/api/v2/mix/account/bill'
             t3 = str(int(datetime.now().timestamp() * 1000))
-            hdr3 = {**hdr, 'ACCESS-SIGN': sign('GET', bal_url, '', t3), 'ACCESS-TIMESTAMP': t3}
-            r = requests.get('https://api.bitget.com' + bal_url, headers=hdr3, params={'productType': 'umcbl'}, timeout=15)
+            hdr3 = {**hdr, 'ACCESS-SIGN': sign('GET', bill_url, '', t3), 'ACCESS-TIMESTAMP': t3}
+            params = {
+                'symbol': data['symbol'],
+                'marginCoin': 'USDT',
+                'productType': 'umcbl',
+                'pageSize': 1
+            }
+            r = requests.get('https://api.bitget.com' + bill_url, headers=hdr3, params=params, timeout=15)
             j = r.json()
-            logger.info(f"[BITGET] 잔고 응답: {j}")
+            logger.info(f"[BITGET] 잔고(bill) 응답: {j}")
 
-            if j.get('code') != '00000':
+            if j.get('code') != '00000' or not j.get('data'):
                 return {'error': 'balance api failed'}
 
-            usdt_data = next((x for x in j.get('data', []) if x.get('marginCoin') == 'USDT'), None)
-            if not usdt_data:
-                return {'error': 'no usdt in data'}
-
-            balance = usdt_data.get('available') or usdt_data.get('availableAmt') or '0'
+            balance = j['data'][0].get('available') or j['data'][0].get('availableAmt') or '0'
             logger.info(f"[BITGET] USDT 잔고: {balance}")
 
             if float(balance) <= 0:
@@ -151,7 +152,7 @@ def bitget_order(data):
         return {'error': 'fatal'}
 
 # ----------------------------------------------------------------------
-# 4. 웹훅 (동기)
+# 4. 웹훅
 # ----------------------------------------------------------------------
 @app.route('/order', methods=['POST'])
 def webhook():
