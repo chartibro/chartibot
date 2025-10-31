@@ -1,4 +1,4 @@
-# app.py – 티커 + 주문 심볼 DOGEUSDT_UMCBL 사용
+# app.py – Bitget v2 서명 완벽 수정 (sign signature error 해결)
 import logging
 from flask import Flask, request, jsonify
 import requests, json, os, hashlib, hmac
@@ -23,7 +23,7 @@ for line in raw.strip().split('\n'):
 logger.info(f"[INIT] 등록된 계정: {list(accounts.keys())}")
 
 # ----------------------------------------------------------------------
-# 2. V37 파싱 (full_symbol 추가)
+# 2. V37 파싱
 # ----------------------------------------------------------------------
 def parse_v37(msg: str):
     if not msg.startswith('TVM:') or not msg.endswith(':MVT'): return None
@@ -36,7 +36,7 @@ def parse_v37(msg: str):
         direction = 'close_short' if 'buy' in side_raw else 'close_long'
 
     symbol = payload.get('symbol', '').replace('/', 'USDT')
-    full_symbol = f"{symbol}_UMCBL"  # Bitget v2 형식
+    full_symbol = f"{symbol}_UMCBL"
 
     return {
         'exchange': payload.get('exchange', '').lower(),
@@ -51,23 +51,25 @@ def parse_v37(msg: str):
     }
 
 # ----------------------------------------------------------------------
-# 3. Bitget 주문 (full_symbol 사용)
+# 3. Bitget 서명 함수 (완벽 수정)
+# ----------------------------------------------------------------------
+def bitget_sign(method: str, url: str, body: dict, secret: str, ts: str):
+    body_str = json.dumps(body, separators=(',', ':'), ensure_ascii=False) if body else ''
+    pre_hash = f"{ts}{method.upper()}{url}{body_str}"
+    return hmac.new(secret.encode(), pre_hash.encode(), hashlib.sha256).hexdigest()
+
+# ----------------------------------------------------------------------
+# 4. Bitget 주문
 # ----------------------------------------------------------------------
 def bitget_order(data):
     try:
-        logger.info(f"[BITGET] === 주문 시작 (잔고 스킵) ===")
+        logger.info(f"[BITGET] === 주문 시작 ===")
         acc = accounts.get(data['account'])
         if not acc or acc['exchange'] != 'bitget': return {'error': 'Invalid account'}
 
-        def sign(method, url, body, ts):
-            pre = f"{ts}{method.upper()}{url}"
-            pre += json.dumps(body) if body else ''
-            return hmac.new(acc['secret'].encode(), pre.encode(), hashlib.sha256).hexdigest()
-
         ts = str(int(datetime.now().timestamp() * 1000))
-        hdr = {
+        hdr_base = {
             'ACCESS-KEY': acc['key'],
-            'ACCESS-SIGN': '',
             'ACCESS-TIMESTAMP': ts,
             'ACCESS-PASSPHRASE': acc['passphrase'],
             'Content-Type': 'application/json'
@@ -76,14 +78,19 @@ def bitget_order(data):
         # 1. 레버리지
         try:
             lev_url = '/api/v2/mix/account/set-leverage'
-            lev_body = {'symbol': data['full_symbol'], 'marginCoin': 'USDT', 'leverage': str(data['leverage']), 'productType': 'umcbl'}
-            hdr['ACCESS-SIGN'] = sign('POST', lev_url, lev_body, ts)
+            lev_body = {
+                'symbol': data['full_symbol'],
+                'marginCoin': 'USDT',
+                'leverage': str(data['leverage']),
+                'productType': 'umcbl'
+            }
+            hdr = {**hdr_base, 'ACCESS-SIGN': bitget_sign('POST', lev_url, lev_body, acc['secret'], ts)}
             r = requests.post('https://api.bitget.com' + lev_url, headers=hdr, json=lev_body, timeout=15)
-            logger.info(f"[BITGET] 레버리지: {r.text}")
+            logger.info(f"[BITGET] 레버리지 응답: {r.text}")
         except Exception as e:
             logger.warning(f"[BITGET] 레버리지 실패 (무시): {e}")
 
-        # 2. 현재가 (full_symbol 사용)
+        # 2. 현재가
         try:
             r = requests.get('https://api.bitget.com/api/v2/mix/market/ticker', params={'symbol': data['full_symbol']}, timeout=15)
             j = r.json()
@@ -100,7 +107,7 @@ def bitget_order(data):
         qty = round(10 / price, 6)
         logger.info(f"[BITGET] 주문 수량: {qty}")
 
-        # 4. 주문 (full_symbol 사용)
+        # 4. 주문
         try:
             order_url = '/api/v2/mix/order/place-order'
             body = {
@@ -113,7 +120,7 @@ def bitget_order(data):
                 'productType': 'umcbl'
             }
             t4 = str(int(datetime.now().timestamp() * 1000))
-            hdr4 = {**hdr, 'ACCESS-SIGN': sign('POST', order_url, body, t4), 'ACCESS-TIMESTAMP': t4}
+            hdr4 = {**hdr_base, 'ACCESS-SIGN': bitget_sign('POST', order_url, body, acc['secret'], t4), 'ACCESS-TIMESTAMP': t4}
             r = requests.post('https://api.bitget.com' + order_url, headers=hdr4, json=body, timeout=15)
             result = r.json()
             logger.info(f"[BITGET ORDER RESULT] {result}")
@@ -127,7 +134,7 @@ def bitget_order(data):
         return {'error': 'fatal'}
 
 # ----------------------------------------------------------------------
-# 4. 웹훅
+# 5. 웹훅
 # ----------------------------------------------------------------------
 @app.route('/order', methods=['POST'])
 def webhook():
