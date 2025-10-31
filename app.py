@@ -1,4 +1,4 @@
-# app.py – sort_keys=True + 새 timestamp + 고정 10 USDT
+# app.py – clientOid 강제 str + sort_keys=True + 새 timestamp
 import logging
 from flask import Flask, request, jsonify
 import requests, json, os, hashlib, hmac
@@ -49,16 +49,16 @@ def parse_v37(msg: str):
     }
 
 # ----------------------------------------------------------------------
-# 3. Bitget 서명 함수 (sort_keys=True 필수)
+# 3. Bitget 서명 함수 (sort_keys=True)
 # ----------------------------------------------------------------------
 def bitget_sign(method, url, body_dict, secret, ts):
-    body_str = json.dumps(body_dict, separators=(',', ':'), sort_keys=True, ensure_ascii=False) if body_dict else ''
+    body_str = json.dumps(body_dict, separators=(',', ':'), sort_keys=True, ensure_ascii=False)
     pre_hash = f"{ts}{method.upper()}{url}{body_str}"
     logger.info(f"[SIGN] pre_hash: {pre_hash}")
     return hmac.new(secret.encode(), pre_hash.encode(), hashlib.sha256).hexdigest()
 
 # ----------------------------------------------------------------------
-# 4. Bitget 주문 (새로운 timestamp + 고정 10 USDT)
+# 4. Bitget 주문 (clientOid 강제 str)
 # ----------------------------------------------------------------------
 def bitget_order(data):
     try:
@@ -94,9 +94,10 @@ def bitget_order(data):
         qty = round(10 / price, 6)
         logger.info(f"[BITGET] 고정 가격: {price}, 수량: {qty}")
 
-        # 3. 주문
+        # 3. 주문 (clientOid 강제 str)
         try:
             ts2 = str(int(datetime.now().timestamp() * 1000))
+            client_oid = f"v37_{int(datetime.now().timestamp())}"  # int → str
             order_url = '/api/v2/mix/order/place-order'
             order_body = {
                 'symbol': data['symbol'],
@@ -104,7 +105,7 @@ def bitget_order(data):
                 'side': data['direction'],
                 'orderType': 'market',
                 'size': str(qty),
-                'clientOid': f'v37_{int(datetime.now().timestamp())}',
+                'clientOid': client_oid,
                 'productType': 'umcbl'
             }
             sign2 = bitget_sign('POST', order_url, order_body, acc['secret'], ts2)
