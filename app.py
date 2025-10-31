@@ -1,4 +1,4 @@
-# app.py – Bitget v2 서명 완벽 수정 (sign signature error 해결)
+# app.py – 티커 last 필드 사용 + 오류 로깅 강화
 import logging
 from flask import Flask, request, jsonify
 import requests, json, os, hashlib, hmac
@@ -51,7 +51,7 @@ def parse_v37(msg: str):
     }
 
 # ----------------------------------------------------------------------
-# 3. Bitget 서명 함수 (완벽 수정)
+# 3. Bitget 서명 함수
 # ----------------------------------------------------------------------
 def bitget_sign(method: str, url: str, body: dict, secret: str, ts: str):
     body_str = json.dumps(body, separators=(',', ':'), ensure_ascii=False) if body else ''
@@ -90,18 +90,23 @@ def bitget_order(data):
         except Exception as e:
             logger.warning(f"[BITGET] 레버리지 실패 (무시): {e}")
 
-        # 2. 현재가
+        # 2. 현재가 (last 필드 사용 + 전체 응답 로깅)
         try:
             r = requests.get('https://api.bitget.com/api/v2/mix/market/ticker', params={'symbol': data['full_symbol']}, timeout=15)
             j = r.json()
-            logger.info(f"[BITGET] 티커 응답: {j}")
-            if j.get('code') != '00000' or not j.get('data'):
+            logger.info(f"[BITGET] 티커 전체 응답: {j}")
+            if j.get('code') != '00000' or not j.get('data') or not j['data']:
+                logger.error(f"[BITGET] 티커 API 실패: code={j.get('code')}, data={j.get('data')}")
                 return {'error': 'ticker error'}
-            price = float(j['data'][0]['lastPr'])
+            price_str = j['data'][0].get('last') or j['data'][0].get('lastPr')
+            if not price_str:
+                logger.error(f"[BITGET] 가격 필드 없음: {j['data'][0]}")
+                return {'error': 'ticker no price'}
+            price = float(price_str)
             logger.info(f"[BITGET] 현재가: {price}")
         except Exception as e:
-            logger.error(f"[BITGET] 티커 실패: {e}")
-            return {'error': 'ticker error'}
+            logger.error(f"[BITGET] 티커 예외: {e}")
+            return {'error': 'ticker exception'}
 
         # 3. 수량 (10 USDT 고정)
         qty = round(10 / price, 6)
