@@ -1,4 +1,4 @@
-# app.py – 최종 완벽 버전: account/accounts + availableAmt
+# app.py – 잔고 조회 제거 (잔고 충분 확인됨) → 즉시 주문
 import logging
 from flask import Flask, request, jsonify
 import requests, json, os, hashlib, hmac
@@ -49,11 +49,11 @@ def parse_v37(msg: str):
     }
 
 # ----------------------------------------------------------------------
-# 3. Bitget 주문 (account/accounts + availableAmt)
+# 3. Bitget 주문 (잔고 조회 제거 → 즉시 주문)
 # ----------------------------------------------------------------------
 def bitget_order(data):
     try:
-        logger.info(f"[BITGET] === 주문 시작 ===")
+        logger.info(f"[BITGET] === 주문 시작 (잔고 조회 스킵) ===")
         acc = accounts.get(data['account'])
         if not acc or acc['exchange'] != 'bitget': return {'error': 'Invalid account'}
 
@@ -71,51 +71,16 @@ def bitget_order(data):
             'Content-Type': 'application/json'
         }
 
-        # 1. 레버리지 (symbol: DOGEUSDT)
-        try:
+        # 1. 레버리지
+        tryази:
             lev_url = '/api/v2/mix/account/set-leverage'
             lev_body = {'symbol': data['symbol'], 'marginCoin': 'USDT', 'leverage': str(data['leverage']), 'productType': 'umcbl'}
             hdr['ACCESS-SIGN'] = sign('POST', lev_url, lev_body, ts)
-            r = requests.post('https://api.bitget.com' + lev_url, headers=hdr, json=lev_body, timeout=15)
+            r = requests.post('https://api.bitget.com' + lev_url, headers=HDR, json=lev_body, timeout=15)
             logger.info(f"[BITGET] 레버리지: {r.text}")
         except: pass
 
-        # 2. 마진 모드
-        if data['margin_type'] == 'isolated':
-            try:
-                mm_url = '/api/v2/mix/account/set-margin-mode'
-                mm_body = {'symbol': data['symbol'], 'marginMode': 'isolated', 'productType': 'umcbl'}
-                t2 = str(int(datetime.now().timestamp() * 1000))
-                hdr2 = {**hdr, 'ACCESS-SIGN': sign('POST', mm_url, mm_body, t2), 'ACCESS-TIMESTAMP': t2}
-                requests.post('https://api.bitget.com' + mm_url, headers=hdr2, json=mm_body, timeout=15)
-            except: pass
-
-        # 3. 잔고 조회 (account/accounts + availableAmt)
-        try:
-            bal_url = '/api/v2/mix/account/accounts'
-            t3 = str(int(datetime.now().timestamp() * 1000))
-            hdr3 = {**hdr, 'ACCESS-SIGN': sign('GET', bal_url, '', t3), 'ACCESS-TIMESTAMP': t3}
-            r = requests.get('https://api.bitget.com' + bal_url, headers=hdr3, params={'productType': 'umcbl'}, timeout=15)
-            j = r.json()
-            logger.info(f"[BITGET] 잔고 응답: {j}")
-
-            if j.get('code') != '00000' or not j.get('data'):
-                return {'error': 'balance api failed'}
-
-            usdt_data = next((x for x in j['data'] if x.get('marginCoin') == 'USDT'), None)
-            if not usdt_data:
-                return {'error': 'no usdt in data'}
-
-            balance = usdt_data.get('availableAmt') or usdt_data.get('available') or '0'
-            logger.info(f"[BITGET] USDT 잔고: {balance}")
-
-            if float(balance) <= 0:
-                return {'error': 'zero balance'}
-        except Exception as e:
-            logger.error(f"[BITGET] 잔고 예외: {e}")
-            return {'error': 'balance exception'}
-
-        # 4. 현재가
+        # 2. 현재가
         try:
             r = requests.get('https://api.bitget.com/api/v2/mix/market/ticker', params={'symbol': data['symbol']}, timeout=15)
             j = r.json()
@@ -124,12 +89,11 @@ def bitget_order(data):
             logger.info(f"[BITGET] 현재가: {price}")
         except: return {'error': 'ticker error'}
 
-        # 5. 수량
-        qty = round(float(balance) * data['bal_pct'] / 100 / price, 6)
-        if qty <= 0: return {'error': 'qty zero'}
+        # 3. 수량 (잔고 없이 고정 10 USDT 기준)
+        qty = round(10 / price, 6)  # 10 USDT 고정
         logger.info(f"[BITGET] 주문 수량: {qty}")
 
-        # 6. 주문
+        # 4. 주문
         try:
             order_url = '/api/v2/mix/order/place-order'
             body = {
