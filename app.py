@@ -1,4 +1,4 @@
-# app.py – 각 요청마다 새로운 timestamp + 고정 10 USDT
+# app.py – 서명 100% 정확 (json.dumps + 새 timestamp)
 import logging
 from flask import Flask, request, jsonify
 import requests, json, os, hashlib, hmac
@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # ----------------------------------------------------------------------
-# 1. 계후 로드
+# 1. 계정 로드
 # ----------------------------------------------------------------------
 accounts = {}
 raw = os.getenv('EXCHANGE_ACCOUNTS', '')
@@ -49,12 +49,13 @@ def parse_v37(msg: str):
     }
 
 # ----------------------------------------------------------------------
-# 3. Bitget 서명 함수
+# 3. Bitget 서명 함수 (100% 정확)
 # ----------------------------------------------------------------------
-def bitget_sign(method, url, body, secret, ts):
-    body_str = json.dumps(body, separators=(',', ':'), ensure_ascii=False) if body else ''
+def bitget_sign(method, url, body_dict, secret, ts):
+    # body는 dict → json.dumps로 직렬화 (정렬된 키, 공백 제거)
+    body_str = json.dumps(body_dict, separators=(',', ':'), ensure_ascii=False) if body_dict else ''
     pre_hash = f"{ts}{method.upper()}{url}{body_str}"
-    logger.info(f"[SIGN] pre_hash: {pre_hash}")  # 디버깅용
+    logger.info(f"[SIGN] pre_hash: {pre_hash}")
     return hmac.new(secret.encode(), pre_hash.encode(), hashlib.sha256).hexdigest()
 
 # ----------------------------------------------------------------------
@@ -66,7 +67,7 @@ def bitget_order(data):
         acc = accounts.get(data['account'])
         if not acc or acc['exchange'] != 'bitget': return {'error': 'Invalid account'}
 
-        # 1. 레버리지 (새로운 timestamp)
+        # 1. 레버리지
         try:
             ts1 = str(int(datetime.now().timestamp() * 1000))
             lev_url = '/api/v2/mix/account/set-leverage'
@@ -76,12 +77,13 @@ def bitget_order(data):
                 'leverage': str(data['leverage']),
                 'productType': 'umcbl'
             }
+            sign1 = bitget_sign('POST', lev_url, lev_body, acc['secret'], ts1)
             hdr1 = {
                 'ACCESS-KEY': acc['key'],
                 'ACCESS-TIMESTAMP': ts1,
                 'ACCESS-PASSPHRASE': acc['passphrase'],
                 'Content-Type': 'application/json',
-                'ACCESS-SIGN': bitget_sign('POST', lev_url, lev_body, acc['secret'], ts1)
+                'ACCESS-SIGN': sign1
             }
             r = requests.post('https://api.bitget.com' + lev_url, headers=hdr1, json=lev_body, timeout=15)
             logger.info(f"[BITGET] 레버리지 응답: {r.text}")
@@ -93,11 +95,11 @@ def bitget_order(data):
         qty = round(10 / price, 6)
         logger.info(f"[BITGET] 고정 가격: {price}, 수량: {qty}")
 
-        # 3. 주문 (새로운 timestamp)
+        # 3. 주문
         try:
             ts2 = str(int(datetime.now().timestamp() * 1000))
             order_url = '/api/v2/mix/order/place-order'
-            body = {
+            order_body = {
                 'symbol': data['symbol'],
                 'marginCoin': 'USDT',
                 'side': data['direction'],
@@ -106,14 +108,15 @@ def bitget_order(data):
                 'clientOid': f'v37_{int(datetime.now().timestamp())}',
                 'productType': 'umcbl'
             }
+            sign2 = bitget_sign('POST', order_url, order_body, acc['secret'], ts2)
             hdr2 = {
                 'ACCESS-KEY': acc['key'],
                 'ACCESS-TIMESTAMP': ts2,
                 'ACCESS-PASSPHRASE': acc['passphrase'],
                 'Content-Type': 'application/json',
-                'ACCESS-SIGN': bitget_sign('POST', order_url, body, acc['secret'], ts2)
+                'ACCESS-SIGN': sign2
             }
-            r = requests.post('https://api.bitget.com' + order_url, headers=hdr2, json=body, timeout=15)
+            r = requests.post('https://api.bitget.com' + order_url, headers=hdr2, json=order_body, timeout=15)
             result = r.json()
             logger.info(f"[BITGET ORDER RESULT] {result}")
             return result
