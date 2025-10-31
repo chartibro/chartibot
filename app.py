@@ -1,4 +1,4 @@
-# app.py – 서명 100% 정확 (json.dumps + 새 timestamp)
+# app.py – sort_keys=True + 새 timestamp + 고정 10 USDT
 import logging
 from flask import Flask, request, jsonify
 import requests, json, os, hashlib, hmac
@@ -49,11 +49,10 @@ def parse_v37(msg: str):
     }
 
 # ----------------------------------------------------------------------
-# 3. Bitget 서명 함수 (100% 정확)
+# 3. Bitget 서명 함수 (sort_keys=True 필수)
 # ----------------------------------------------------------------------
 def bitget_sign(method, url, body_dict, secret, ts):
-    # body는 dict → json.dumps로 직렬화 (정렬된 키, 공백 제거)
-    body_str = json.dumps(body_dict, separators=(',', ':'), ensure_ascii=False) if body_dict else ''
+    body_str = json.dumps(body_dict, separators=(',', ':'), sort_keys=True, ensure_ascii=False) if body_dict else ''
     pre_hash = f"{ts}{method.upper()}{url}{body_str}"
     logger.info(f"[SIGN] pre_hash: {pre_hash}")
     return hmac.new(secret.encode(), pre_hash.encode(), hashlib.sha256).hexdigest()
