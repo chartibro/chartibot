@@ -1,4 +1,4 @@
-# app.py – Vercel IP 차단 완전 우회 (잔고/티커 스킵)
+# app.py – 각 요청마다 새로운 timestamp + 고정 10 USDT
 import logging
 from flask import Flask, request, jsonify
 import requests, json, os, hashlib, hmac
@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # ----------------------------------------------------------------------
-# 1. 계정 로드
+# 1. 계후 로드
 # ----------------------------------------------------------------------
 accounts = {}
 raw = os.getenv('EXCHANGE_ACCOUNTS', '')
@@ -54,27 +54,21 @@ def parse_v37(msg: str):
 def bitget_sign(method, url, body, secret, ts):
     body_str = json.dumps(body, separators=(',', ':'), ensure_ascii=False) if body else ''
     pre_hash = f"{ts}{method.upper()}{url}{body_str}"
+    logger.info(f"[SIGN] pre_hash: {pre_hash}")  # 디버깅용
     return hmac.new(secret.encode(), pre_hash.encode(), hashlib.sha256).hexdigest()
 
 # ----------------------------------------------------------------------
-# 4. Bitget 주문 (잔고/티커 스킵 → 고정 10 USDT)
+# 4. Bitget 주문 (새로운 timestamp + 고정 10 USDT)
 # ----------------------------------------------------------------------
 def bitget_order(data):
     try:
-        logger.info(f"[BITGET] === 주문 시작 (잔고/티커 스킵) ===")
+        logger.info(f"[BITGET] === 주문 시작 ===")
         acc = accounts.get(data['account'])
         if not acc or acc['exchange'] != 'bitget': return {'error': 'Invalid account'}
 
-        ts = str(int(datetime.now().timestamp() * 1000))
-        hdr_base = {
-            'ACCESS-KEY': acc['key'],
-            'ACCESS-TIMESTAMP': ts,
-            'ACCESS-PASSPHRASE': acc['passphrase'],
-            'Content-Type': 'application/json'
-        }
-
-        # 1. 레버리지
+        # 1. 레버리지 (새로운 timestamp)
         try:
+            ts1 = str(int(datetime.now().timestamp() * 1000))
             lev_url = '/api/v2/mix/account/set-leverage'
             lev_body = {
                 'symbol': data['symbol'],
@@ -82,19 +76,26 @@ def bitget_order(data):
                 'leverage': str(data['leverage']),
                 'productType': 'umcbl'
             }
-            hdr = {**hdr_base, 'ACCESS-SIGN': bitget_sign('POST', lev_url, lev_body, acc['secret'], ts)}
-            r = requests.post('https://api.bitget.com' + lev_url, headers=hdr, json=lev_body, timeout=15)
+            hdr1 = {
+                'ACCESS-KEY': acc['key'],
+                'ACCESS-TIMESTAMP': ts1,
+                'ACCESS-PASSPHRASE': acc['passphrase'],
+                'Content-Type': 'application/json',
+                'ACCESS-SIGN': bitget_sign('POST', lev_url, lev_body, acc['secret'], ts1)
+            }
+            r = requests.post('https://api.bitget.com' + lev_url, headers=hdr1, json=lev_body, timeout=15)
             logger.info(f"[BITGET] 레버리지 응답: {r.text}")
         except Exception as e:
             logger.warning(f"[BITGET] 레버리지 실패 (무시): {e}")
 
-        # 2. 고정 가격 + 수량 (10 USDT)
-        price = 0.083  # DOGEUSDT 현재가
-        qty = round(10 / price, 6)  # 약 120.48 DOGE
+        # 2. 고정 가격 + 수량
+        price = 0.083
+        qty = round(10 / price, 6)
         logger.info(f"[BITGET] 고정 가격: {price}, 수량: {qty}")
 
-        # 3. 주문
+        # 3. 주문 (새로운 timestamp)
         try:
+            ts2 = str(int(datetime.now().timestamp() * 1000))
             order_url = '/api/v2/mix/order/place-order'
             body = {
                 'symbol': data['symbol'],
@@ -105,9 +106,14 @@ def bitget_order(data):
                 'clientOid': f'v37_{int(datetime.now().timestamp())}',
                 'productType': 'umcbl'
             }
-            t4 = str(int(datetime.now().timestamp() * 1000))
-            hdr4 = {**hdr_base, 'ACCESS-SIGN': bitget_sign('POST', order_url, body, acc['secret'], t4), 'ACCESS-TIMESTAMP': t4}
-            r = requests.post('https://api.bitget.com' + order_url, headers=hdr4, json=body, timeout=15)
+            hdr2 = {
+                'ACCESS-KEY': acc['key'],
+                'ACCESS-TIMESTAMP': ts2,
+                'ACCESS-PASSPHRASE': acc['passphrase'],
+                'Content-Type': 'application/json',
+                'ACCESS-SIGN': bitget_sign('POST', order_url, body, acc['secret'], ts2)
+            }
+            r = requests.post('https://api.bitget.com' + order_url, headers=hdr2, json=body, timeout=15)
             result = r.json()
             logger.info(f"[BITGET ORDER RESULT] {result}")
             return result
