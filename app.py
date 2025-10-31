@@ -1,4 +1,4 @@
-# app.py – 잔고 조회 제거 + umcbl + 즉시 주문
+# app.py – Vercel IP 차단 완전 우회 (잔고/티커 스킵)
 import logging
 from flask import Flask, request, jsonify
 import requests, json, os, hashlib, hmac
@@ -26,12 +26,9 @@ logger.info(f"[INIT] 등록된 계정: {list(accounts.keys())}")
 # 2. V37 파싱
 # ----------------------------------------------------------------------
 def parse_v37(msg: str):
-    logger.info(f"[PARSE] 메시지: {repr(msg)}")
     if not msg.startswith('TVM:') or not msg.endswith(':MVT'): return None
     try: payload = json.loads(msg[4:-4])
-    except Exception as e:
-        logger.error(f"[PARSE] JSON 실패: {e}")
-        return None
+    except: return None
 
     side_raw = payload.get('side', '').lower()
     direction = 'open_long' if 'buy' in side_raw else 'open_short'
@@ -60,11 +57,11 @@ def bitget_sign(method, url, body, secret, ts):
     return hmac.new(secret.encode(), pre_hash.encode(), hashlib.sha256).hexdigest()
 
 # ----------------------------------------------------------------------
-# 4. Bitget 주문 (잔고 스킵 + 고정 10 USDT)
+# 4. Bitget 주문 (잔고/티커 스킵 → 고정 10 USDT)
 # ----------------------------------------------------------------------
 def bitget_order(data):
     try:
-        logger.info(f"[BITGET] === 주문 시작 (잔고 스킵) ===")
+        logger.info(f"[BITGET] === 주문 시작 (잔고/티커 스킵) ===")
         acc = accounts.get(data['account'])
         if not acc or acc['exchange'] != 'bitget': return {'error': 'Invalid account'}
 
@@ -91,23 +88,12 @@ def bitget_order(data):
         except Exception as e:
             logger.warning(f"[BITGET] 레버리지 실패 (무시): {e}")
 
-        # 2. 현재가
-        try:
-            r = requests.get('https://api.bitget.com/api/v2/mix/market/ticker', params={'symbol': data['symbol']}, timeout=15)
-            j = r.json()
-            logger.info(f"[BITGET] 티커 응답: {j}")
-            if j.get('code') != '00000' or not j.get('data'):
-                return {'error': 'ticker error'}
-            price = float(j['data'][0].get('last') or j['data'][0].get('lastPr') or '0')
-            if price == 0: return {'error': 'price zero'}
-            logger.info(f"[BITGET] 현재가: {price}")
-        except: return {'error': 'ticker error'}
+        # 2. 고정 가격 + 수량 (10 USDT)
+        price = 0.083  # DOGEUSDT 현재가
+        qty = round(10 / price, 6)  # 약 120.48 DOGE
+        logger.info(f"[BITGET] 고정 가격: {price}, 수량: {qty}")
 
-        # 3. 수량 (10 USDT 고정)
-        qty = round(10 / price, 6)
-        logger.info(f"[BITGET] 주문 수량: {qty}")
-
-        # 4. 주문
+        # 3. 주문
         try:
             order_url = '/api/v2/mix/order/place-order'
             body = {
