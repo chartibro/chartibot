@@ -1,4 +1,4 @@
-# app.py – 잔고 조회 제거 (잔고 충분 확인됨) → 즉시 주문
+# app.py – 최종 완벽 버전 (오타 제거 + 잔고 조회 스킵)
 import logging
 from flask import Flask, request, jsonify
 import requests, json, os, hashlib, hmac
@@ -49,7 +49,7 @@ def parse_v37(msg: str):
     }
 
 # ----------------------------------------------------------------------
-# 3. Bitget 주문 (잔고 조회 제거 → 즉시 주문)
+# 3. Bitget 주문 (잔고 조회 스킵 + 오타 제거)
 # ----------------------------------------------------------------------
 def bitget_order(data):
     try:
@@ -71,14 +71,15 @@ def bitget_order(data):
             'Content-Type': 'application/json'
         }
 
-        # 1. 레버리지
-        tryази:
+        # 1. 레버리지 (오타 제거)
+        try:
             lev_url = '/api/v2/mix/account/set-leverage'
             lev_body = {'symbol': data['symbol'], 'marginCoin': 'USDT', 'leverage': str(data['leverage']), 'productType': 'umcbl'}
             hdr['ACCESS-SIGN'] = sign('POST', lev_url, lev_body, ts)
-            r = requests.post('https://api.bitget.com' + lev_url, headers=HDR, json=lev_body, timeout=15)
+            r = requests.post('https://api.bitget.com' + lev_url, headers=hdr, json=lev_body, timeout=15)
             logger.info(f"[BITGET] 레버리지: {r.text}")
-        except: pass
+        except Exception as e:
+            logger.warning(f"[BITGET] 레버리지 실패 (무시): {e}")
 
         # 2. 현재가
         try:
@@ -87,10 +88,12 @@ def bitget_order(data):
             if j.get('code') != '00000': return {'error': 'ticker error'}
             price = float(j['data'][0]['lastPr'])
             logger.info(f"[BITGET] 현재가: {price}")
-        except: return {'error': 'ticker error'}
+        except Exception as e:
+            logger.error(f"[BITGET] 티커 실패: {e}")
+            return {'error': 'ticker error'}
 
-        # 3. 수량 (잔고 없이 고정 10 USDT 기준)
-        qty = round(10 / price, 6)  # 10 USDT 고정
+        # 3. 수량 (10 USDT 고정)
+        qty = round(10 / price, 6)
         logger.info(f"[BITGET] 주문 수량: {qty}")
 
         # 4. 주문
