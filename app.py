@@ -7,7 +7,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
-# 계정 로드
+# === 계정 로드 ===
 accounts = {}
 raw = os.getenv('EXCHANGE_ACCOUNTS', '')
 for line in raw.strip().split('\n'):
@@ -16,58 +16,55 @@ for line in raw.strip().split('\n'):
     uid, exch, key, secret, passphrase = p
     accounts[uid] = {'exchange': exch.lower(), 'key': key, 'secret': secret, 'passphrase': passphrase}
 
-# V37 파싱
-def parse_v37(msg: str):
-    if not msg.startswith('TVM:') or not msg.endswith(':MVT'): return None
-    try: payload = json.loads(msg[4:-4])
-    except: return None
+# === V38 메시지 파싱 (Pine Script v6) ===
+def parse_v38(msg: str):
+    if not msg.startswith('TVM:') or not msg.endswith(':MVT'):
+        return None
+    try:
+        payload = json.loads(msg[4:-4])
+    except json.JSONDecodeError:
+        return None
+
     side_raw = payload.get('side', '').lower()
+    symbol_raw = payload.get('symbol', '')
+
+    # 방향 결정
     if 'close' in side_raw:
         direction = 'close_short' if 'buy' in side_raw else 'close_long'
     else:
         direction = 'open_long' if 'buy' in side_raw else 'open_short'
-    symbol = payload.get('symbol', '').replace('/', 'USDT')
+
+    # 심볼 정규화
+    symbol = symbol_raw.replace('/', 'USDT').upper()  # BTC/USDT → BTCUSDT
+
     return {
         'exchange': payload.get('exchange', '').lower(),
         'account': payload.get('account', ''),
         'symbol': symbol,
         'direction': direction,
-        'bal_pct': float(payload.get('bal_pct', 0)),
-        'leverage': int(payload.get('leverage', 1)),
-        'margin_type': payload.get('margin_type', 'cross').lower(),
+        'leverage': int(payload.get('leverage', 10)),
         'token': payload.get('token', '')
     }
 
-# 서명 (Bitget 공식 방식 정확히 따름)
+# === Bitget 서명 (공식 방식) ===
 def bitget_sign(ts, method, url, body, secret):
     body_str = json.dumps(body) if body else ''
     pre_hash = f"{ts}{method.upper()}{url}{body_str}"
     logger.info(f"[SIGN] pre_hash: {pre_hash}")
     return hmac.new(secret.encode('utf-8'), pre_hash.encode('utf-8'), hashlib.sha256).hexdigest()
 
-# 현재가 조회 (size 계산용)
-def get_price(symbol):
-    try:
-        url = f"https://api.bitget.com/api/v2/mix/market/ticker?symbol={symbol}&productType=UMCBL_USDT"
-        r = requests.get(url, timeout=10)
-        data = r.json()
-        if data.get('code') == '00000':
-            return float(data['data'][0]['lastPr'])
-    except: pass
-    return None
-
-# 주문
+# === Bitget 주문 (100 DOJI 고정) ===
 def bitget_order(data):
     try:
         acc = accounts.get(data['account'])
         if not acc or acc['exchange'] != 'bitget':
             return {'error': 'Invalid account'}
 
-        symbol = data['symbol']
+        symbol = data['symbol']        # 예: DOGEUSDT
+        direction = data['direction']  # open_long, close_long 등
         leverage = data['leverage']
-        direction = data['direction']
 
-        # 1. 레버리지 설정
+        # --- 1. 레버리지 설정 ---
         try:
             ts1 = str(int(datetime.now().timestamp() * 1000))
             lev_url = '/api/v2/mix/account/set-leverage'
@@ -75,7 +72,7 @@ def bitget_order(data):
                 "symbol": symbol,
                 "marginCoin": "USDT",
                 "leverage": str(leverage),
-                "productType": "UMCBL_USDT"  # 수정!
+                "productType": "UMCBL_USDT"
             }
             sign1 = bitget_sign(ts1, 'POST', lev_url, lev_body, acc['secret'])
             headers = {
@@ -91,27 +88,12 @@ def bitget_order(data):
         except Exception as e:
             logger.error(f"[LEV ERROR] {e}")
 
-        # 2. 현재가 조회 후 size 계산 (10 USDT 고정)
-        price = get_price(symbol)
-        if not price:
-            return {'error': 'Failed to get price'}
+        # --- 2. 주문 (100 DOJI 고정) ---
+        size = 100  # 100 DOJI = 100 계약 (DOGEUSDT: 1계약 = 1 DOGE)
 
-        # 10 USDT 기준 계약 수 계산
-        contract_value = 0.001  # BTCUSDT: 1계약 = 0.001 BTC
-        if 'USDT' in symbol:
-            base = symbol.replace('USDT', '')
-            if base in ['BTC', 'ETH']:
-                contract_value = 0.001 if base == 'BTC' else 0.01
-            else:
-                contract_value = 1.0  # 기타 코인은 1계약 = 1코인
-
-        size = round((10 / price) / contract_value, 6)  # 10 USDT로 살 수 있는 계약 수
-        if size < 0.001: size = 0.001  # 최소 주문
-
-        # 3. 주문
         ts2 = str(int(datetime.now().timestamp() * 1000))
         order_url = '/api/v2/mix/order/place-order'
-        client_oid = f"v37_{int(datetime.now().timestamp())}"
+        client_oid = f"v38_{int(datetime.now().timestamp())}"
         order_body = {
             "symbol": symbol,
             "marginCoin": "USDT",
@@ -119,7 +101,7 @@ def bitget_order(data):
             "orderType": "market",
             "size": str(size),
             "clientOid": client_oid,
-            "productType": "UMCBL_USDT"  # 수정!
+            "productType": "UMCBL_USDT"
         }
         sign2 = bitget_sign(ts2, 'POST', order_url, order_body, acc['secret'])
         headers2 = {
@@ -139,17 +121,20 @@ def bitget_order(data):
         logger.error(f"[ERROR] {e}")
         return {'error': str(e)}
 
-# 웹훅
+# === 웹훅 엔드포인트 ===
 @app.route('/order', methods=['POST'])
 def webhook():
     payload = request.get_json(silent=True) or {}
     msg = payload.get('message', '')
+
     if not msg:
         return jsonify({'error': 'No message'}), 400
 
-    parsed = parse_v37(msg)
-    if not parsed or parsed['account'] not in accounts:
-        return jsonify({'error': 'Invalid payload or account'}), 400
+    parsed = parse_v38(msg)
+    if not parsed:
+        return jsonify({'error': 'Invalid V38 message'}), 400
+    if parsed['account'] not in accounts:
+        return jsonify({'error': 'Unknown account'}), 400
 
     result = bitget_order(parsed)
     return jsonify({'status': 'ok', 'result': result}), 200
